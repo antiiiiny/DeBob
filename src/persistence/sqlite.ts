@@ -1,5 +1,6 @@
 import initSqlJs, { type Database } from 'sql.js'
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
+import { createRequire } from 'node:module'
 import { join } from 'path'
 import type { Node, Edge, Graph } from '../graph/types.js'
 import type {
@@ -29,12 +30,14 @@ export interface Manifest {
 // ─── Singleton WASM init ──────────────────────────────────────────────────────
 
 let _SQL: Awaited<ReturnType<typeof initSqlJs>> | null = null
+const _require = createRequire(import.meta.url)
 
 async function getSql(): Promise<Awaited<ReturnType<typeof initSqlJs>>> {
   if (_SQL) return _SQL
-  // Locate the WASM file relative to the package root
-  const wasmUrl = new URL('../../node_modules/sql.js/dist/sql-wasm.wasm', import.meta.url)
-  _SQL = await initSqlJs({ locateFile: () => wasmUrl.pathname.replace(/^\/([A-Z]:)/, '$1') })
+  // Resolve from the installed package so both source and independently built
+  // modules find the WASM asset (rather than assuming a particular dist layout).
+  const wasmPath = _require.resolve('sql.js/dist/sql-wasm.wasm')
+  _SQL = await initSqlJs({ locateFile: () => wasmPath })
   return _SQL
 }
 

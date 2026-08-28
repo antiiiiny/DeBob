@@ -1,16 +1,24 @@
-#!/usr/bin/env node
 import { createRequire } from 'module'
+import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
+import open from 'open'
 import { runInit } from '../src/engine/index.js'
 import { createLLMAdapter } from '../src/llm/index.js'
 import type { LLMAdapter } from '../src/llm/adapter.js'
+import { startVisualiserServer } from '../src/visualiser/server.js'
 
 // ─── Package metadata ─────────────────────────────────────────────────────────
 
 const _require = createRequire(import.meta.url)
-const pkg = _require('../package.json') as { version: string; description: string }
+const sourcePackagePath = fileURLToPath(new URL('../package.json', import.meta.url))
+const builtPackagePath = fileURLToPath(new URL('../../package.json', import.meta.url))
+const pkg = _require(existsSync(sourcePackagePath) ? sourcePackagePath : builtPackagePath) as {
+  version: string
+  description: string
+}
 
 // ─── Program ──────────────────────────────────────────────────────────────────
 
@@ -138,7 +146,53 @@ program
     }
   })
 
-// ─── review command (stub) ────────────────────────────────────────────────────
+// ─── visualise command ─────────────────────────────────────────────────────
+
+program
+  .command('visualise')
+  .alias('viz')
+  .description('Open an interactive visualisation of the persisted repository graph')
+  .option('--repo <path>', 'Path to the repository root', process.cwd())
+  .option('--port <n>', 'Port to listen on', '7842')
+  .action(async (opts: { repo: string; port: string }) => {
+    const port = parseInt(opts.port, 10)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      console.error(chalk.red('\n✖  Port must be an integer between 1 and 65535.'))
+      process.exit(1)
+    }
+
+    const spinner = ora('Reading graph from .debob/context.db...').start()
+
+    try {
+      const { url, close } = await startVisualiserServer(opts.repo, { port })
+      spinner.succeed(chalk.green('Graph visualiser ready'))
+      console.log(chalk.green('Graph visualiser running at ' + url))
+      console.log(chalk.dim('Press Ctrl+C to stop.'))
+
+      void open(url).catch(() => {
+        console.warn(chalk.yellow('Could not open the browser automatically. Open the URL above manually.'))
+      })
+
+      let stopping = false
+      const stop = () => {
+        if (stopping) return
+        stopping = true
+        close()
+        console.log(chalk.dim('Server stopped.'))
+        process.exit(0)
+      }
+
+      process.once('SIGINT', stop)
+      process.once('SIGTERM', stop)
+    } catch (err) {
+      spinner.fail(chalk.red('Could not start graph visualiser'))
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(chalk.red('\n✖  ' + msg))
+      process.exit(1)
+    }
+  })
+
+// ─── review command (stub) ──────────────────────────────────────────────────
 
 program
   .command('review')
