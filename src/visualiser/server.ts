@@ -215,8 +215,13 @@ const VISUALISER_HTML = `<!doctype html>
       var EDGE_TYPES = ['imports', 'exports', 'extends', 'implements', 'calls', 'depends_on', 'instantiates', 'exposes', 'handles', 'tests', 'reads_from', 'writes_to', 'communicates_with', 'configured_by', 'related_to'];
       var LAYERS = ['presentation', 'business', 'data', 'config', 'test', 'infra', 'unclassified'];
       var NODE_COLORS = { file: '#4A90D9', class: '#7B61FF', function: '#50C878', interface: '#FFB347', variable: '#87CEEB', package: '#FF6B6B', route: '#FFD700' };
-      var EDGE_COLORS = { imports: '#999', exports: '#4A90D9', extends: '#7B61FF', implements: '#FFB347', calls: '#50C878', depends_on: '#FF6B6B' };
-      var DEFAULT_EDGE_COLOR = '#ccc';
+      var EDGE_COLORS = {
+        imports: '#9AA5B1', exports: '#4A90D9', extends: '#7B61FF', implements: '#FFB347',
+        calls: '#50C878', depends_on: '#FF6B6B', instantiates: '#E879F9', exposes: '#22D3EE',
+        handles: '#F97316', tests: '#A3E635', reads_from: '#38BDF8', writes_to: '#F43F5E',
+        communicates_with: '#C084FC', configured_by: '#FACC15', related_to: '#94A3B8'
+      };
+      var DEFAULT_EDGE_COLOR = '#94A3B8';
       var state = { nodeTypes: new Set(NODE_TYPES), edgeTypes: new Set(EDGE_TYPES), layers: new Set(LAYERS), hotOnly: false };
       var graphData = null;
       var cy = null;
@@ -299,12 +304,16 @@ const VISUALISER_HTML = `<!doctype html>
           });
         });
         data.edges.forEach(function (edge) {
-          elements.push({ group: 'edges', data: edge, classes: 'edge-' + edge.type });
+          elements.push({
+            group: 'edges',
+            data: Object.assign({}, edge, { edgeColor: EDGE_COLORS[edge.type] || DEFAULT_EDGE_COLOR }),
+            classes: 'edge-' + edge.type
+          });
         });
 
         var styles = [
-          { selector: 'node', style: { 'background-color': '#607083', 'border-color': '#101923', 'border-width': 1, color: '#e8edf4', height: 'data(diameter)', label: 'data(label)', 'font-size': 9, 'text-outline-color': '#0d141c', 'text-outline-width': 2, 'text-valign': 'bottom', 'text-margin-y': 5, width: 'data(diameter)' } },
-          { selector: 'edge', style: { 'curve-style': 'bezier', 'line-color': DEFAULT_EDGE_COLOR, opacity: .68, 'target-arrow-color': DEFAULT_EDGE_COLOR, 'target-arrow-shape': 'triangle', width: 1.4 } },
+          { selector: 'node', style: { 'background-color': '#607083', 'border-color': '#101923', 'border-width': 1, color: '#e8edf4', height: 'data(diameter)', label: 'data(label)', 'font-size': 10, 'min-zoomed-font-size': 8, 'text-outline-color': '#0d141c', 'text-outline-width': 2, 'text-valign': 'bottom', 'text-margin-y': 5, width: 'data(diameter)' } },
+          { selector: 'edge', style: { 'curve-style': 'bezier', 'line-color': 'data(edgeColor)', opacity: .72, 'target-arrow-color': 'data(edgeColor)', 'target-arrow-shape': 'triangle', width: 1.6 } },
           { selector: 'node.hot', style: { 'border-color': '#FF0000', 'border-width': 3 } },
           { selector: 'node.search-dim', style: { opacity: .13 } },
           { selector: 'node.search-match', style: { 'border-color': '#ffffff', 'border-width': 4, 'z-index': 999 } }
@@ -312,16 +321,23 @@ const VISUALISER_HTML = `<!doctype html>
         NODE_TYPES.forEach(function (type) {
           styles.push({ selector: 'node.node-' + type, style: { 'background-color': NODE_COLORS[type] } });
         });
-        EDGE_TYPES.forEach(function (type) {
-          var color = EDGE_COLORS[type] || DEFAULT_EDGE_COLOR;
-          styles.push({ selector: 'edge.edge-' + type, style: { 'line-color': color, 'target-arrow-color': color } });
-        });
-
         cy = window.cytoscape({
           container: document.getElementById('cy'),
           elements: elements,
           style: styles,
-          layout: { name: 'cose', animate: false, idealEdgeLength: 110, nodeRepulsion: 9000, padding: 34 },
+          layout: {
+            // A rank layout puts every root and isolated node on the same row.
+            // This graph commonly has many of both, so use a compact topology
+            // layout that keeps each connected area together instead.
+            name: 'cose',
+            animate: false,
+            idealEdgeLength: 90,
+            nodeRepulsion: 7000,
+            gravity: 1,
+            numIter: 1500,
+            padding: 50,
+            tile: true
+          },
           wheelSensitivity: .2
         });
         cy.on('tap', 'node', function (event) { showInspector(event.target.data('id')); });
