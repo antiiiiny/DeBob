@@ -6,16 +6,42 @@ DeBob is a persistent repository-understanding and context system for AI coding 
 
 > Git remembers what changed. DeBob remembers what the codebase means.
 
-This plan covers the complete bootstrap from an empty repository to a working `debob init` foundation that:
-- Scans any Git repository
-- Extracts deterministic structure (files, imports, exports, function/class definitions, dependencies)
-- Extracts Git metadata (commits, authors, change frequency, blame)
-- Builds a typed graph of nodes and edges
-- Persists everything to `.debob/context.db` (SQLite)
-- Prints a human-readable discovery summary
-- Exposes clear interfaces for future LLM semantic analysis and the `debob review` command
+This plan covers the complete bootstrap from an empty repository to a working `debob init` foundation.
 
-**Out of scope for this plan:** LLM semantic analysis implementation, `debob review`, `debob explain`, `debob impact`, `debob why`, `debob onboard`, incremental `debob update`.
+### Confirmed Architecture Principle
+
+```
+Repository
+  → deterministic analysis
+  → persistent graph
+  → targeted context retrieval
+  → LLM semantic reasoning (optional)
+```
+
+The LLM never receives the whole repository. The graph and query layer decide what targeted context the LLM needs, then pass only that slice.
+
+### What `debob init` delivers
+
+- Scans any Git repository
+- Extracts deterministic structure: files, imports, exports, functions, classes, interfaces, extends, implements
+- Extracts Git metadata: commits, per-file churn, authors (SHA-256 hashed), last modified
+- Builds a typed, persistent graph of nodes and edges
+- Persists everything to `.debob/context.db` (SQLite) with file content hashes and schema versions for future incremental updates
+- Writes `.debob/manifest.json` with run metadata
+- Prints a human-readable discovery summary
+- With `--semantic`: after structural extraction, queries the graph for targeted context slices and passes those to the LLM for semantic enrichment (module responsibilities, architectural roles, workflow descriptions)
+
+### Confirmed decisions
+
+| Decision | Choice |
+|---|---|
+| Persistence | SQLite (`context.db`) + `manifest.json`. No per-module JSON files. Persistence layer behind an abstract interface so storage can be swapped later. |
+| Static analysis scope | TS/JS only (V1). Extracts: imports, exports, functions, classes, interfaces, extends, implements. No call-graph or type-resolution. `LanguageAnalyzer` interface designed for Python/other grammars later. |
+| LLM mode | `debob init` is deterministic by default. `debob init --semantic` runs LLM enrichment after structural extraction using targeted graph queries — never the full repo. DeBob is fully functional without LLM. |
+| Author privacy | Git author emails SHA-256 hashed before storage. Raw emails never written to `.debob/`. |
+| Incremental updates | File content hashes, analyzer version, schema version, and last-analyzed commit stored per file. Future `debob update` reruns only files whose hash or Git history changed. |
+
+**Out of scope for this plan:** `debob review`, `debob explain`, `debob impact`, `debob why`, `debob onboard`, `debob update`.
 
 ---
 
@@ -27,52 +53,57 @@ This plan covers the complete bootstrap from an empty repository to a working `d
 | Package manager | npm | Universal, no extra tooling |
 | CLI framework | `commander` | Minimal, widely used |
 | Git integration | `simple-git` | Async, well-typed Node.js wrapper |
-| AST parsing | `tree-sitter` + `tree-sitter-typescript` | Extensible to any language grammar |
-| Persistence | `better-sqlite3` | Synchronous, embedded, queryable, single-file |
-| LLM adapter | Custom interface + IBM watsonx first | Provider-agnostic design |
+| AST parsing | `tree-sitter` + `tree-sitter-typescript` | Grammar plugin model — add Python/Rust/etc later |
+| Persistence | `better-sqlite3` | Synchronous, embedded, single-file, queryable |
+| LLM adapter | Custom `LLMAdapter` interface, IBM watsonx first | Provider-agnostic; called only in `--semantic` mode |
 | Build | `tsup` | Fast ESM/CJS dual build |
-| Runtime binary | `tsx` for dev, compiled dist for npx | Allows `npx debob` without global install |
+| Runtime binary | `tsx` for dev, compiled `dist/` for npx | `npx debob` without global install |
 
 ---
 
 ## Repository Layout
 
 ```
-debob/                          ← this repo
+debob/
 ├── bin/
-│   └── debob.ts                ← CLI entry point (shebang, commander setup)
+│   └── debob.ts                    ← CLI entry point (commander)
 ├── src/
 │   ├── engine/
-│   │   └── index.ts            ← Core Engine orchestrator
+│   │   └── index.ts                ← Core orchestrator: runInit
 │   ├── scanner/
-│   │   └── index.ts            ← Repository file scanner
+│   │   └── index.ts                ← File system scanner
 │   ├── analyzers/
-│   │   ├── interface.ts        ← Analyzer plugin interface
+│   │   ├── interface.ts            ← LanguageAnalyzer plugin interface
 │   │   └── typescript/
-│   │       └── index.ts        ← TS/JS static analyzer (tree-sitter)
+│   │       └── index.ts            ← TS/JS tree-sitter analyzer
 │   ├── git/
-│   │   └── index.ts            ← Git metadata extractor
+│   │   └── index.ts                ← Git metadata extractor
 │   ├── graph/
-│   │   ├── types.ts            ← Node, Edge, Graph type definitions
-│   │   └── builder.ts          ← Graph construction from analysis results
+│   │   ├── types.ts                ← Node, Edge, Graph types
+│   │   └── builder.ts              ← Graph construction + deduplication
 │   ├── persistence/
-│   │   ├── schema.ts           ← SQLite schema definition and migrations
-│   │   └── index.ts            ← Read/write operations on context.db
+│   │   ├── interface.ts            ← Abstract PersistenceAdapter interface
+│   │   ├── schema.ts               ← SQLite schema + migrations
+│   │   └── sqlite.ts               ← SQLite implementation of PersistenceAdapter
 │   ├── query/
-│   │   └── index.ts            ← Query helpers over the persisted graph
+│   │   └── index.ts                ← Graph query helpers (used by LLM context builder)
 │   ├── llm/
-│   │   ├── adapter.ts          ← LLMAdapter interface (not yet called)
+│   │   ├── adapter.ts              ← LLMAdapter interface
+│   │   ├── context.ts              ← Context builder: graph queries → targeted LLM prompts
+│   │   ├── index.ts                ← createLLMAdapter factory
 │   │   └── providers/
-│   │       └── watsonx.ts      ← IBM watsonx stub (wired but not invoked in init)
+│   │       └── watsonx.ts          ← IBM watsonx implementation
 │   └── types/
-│       └── index.ts            ← Shared types used across packages
+│       └── index.ts                ← Re-exports all shared types
 ├── docs/
-│   └── architecture.md         ← Human-readable architecture documentation
+│   └── architecture.md
 ├── package.json
 ├── tsconfig.json
 ├── tsup.config.ts
 └── README.md
 ```
+
+Key addition vs initial draft: `src/persistence/interface.ts` (abstract adapter) and `src/llm/context.ts` (the layer that converts graph queries into targeted LLM prompts — enforcing "never send the full repo").
 
 ---
 
@@ -80,19 +111,22 @@ debob/                          ← this repo
 
 ```
 .debob/
-├── context.db          ← SQLite database (all graph data, git metadata, semantics)
-└── manifest.json       ← Lightweight metadata: debob version, init timestamp, repo root, language
+├── context.db       ← SQLite: all graph data, git metadata, semantic enrichment, file hashes
+└── manifest.json    ← Run metadata: debob version, schema version, init timestamp, nodeCount, edgeCount
 ```
 
-`context.db` contains the following tables:
+### `context.db` Tables
 
 | Table | Contents |
 |---|---|
-| `nodes` | Every graph node (file, module, function, class, variable, route) |
+| `nodes` | Graph nodes: files, functions, classes, interfaces, packages |
 | `edges` | Typed relationships between nodes |
-| `git_commits` | Commit hash, author, date, message, files changed |
-| `git_file_stats` | Per-file: commit count, last modified, authors, churn score |
-| `manifest` | Single-row: version, init time, repo path |
+| `git_commits` | hash, author name, author_email_hash (SHA-256), date, subject |
+| `git_file_stats` | filePath, commitCount, churnScore, authorCount, lastModifiedAt |
+| `file_cache` | filePath, contentHash (SHA-256), analyzerVersion, lastAnalyzedAt, lastGitCommit — drives incremental updates |
+| `semantic_enrichments` | nodeId, field (responsibility/layer/etc), value, llmProvider, modelId, createdAt — LLM output stored separately and clearly tagged |
+
+The `file_cache` table is the foundation of incremental updates: on a future `debob update`, any file whose `contentHash` or latest `lastGitCommit` has changed since `lastAnalyzedAt` is re-analyzed; unchanged files are skipped.
 
 ---
 
@@ -102,54 +136,116 @@ debob/                          ← this repo
 
 ```ts
 interface Node {
-  id: string            // canonical: relative file path, or "file::symbol"
-  type: NodeType        // "file" | "module" | "function" | "class" | "variable" | "route" | "package"
+  id: string            // stable: relative file path OR "relativePath::SymbolName"
+  type: NodeType        // see NodeType below
   name: string
   filePath: string
   startLine?: number
   endLine?: number
-  layer?: string        // "presentation" | "business" | "data" | "config" | "test" | "infra"
-  responsibility?: string  // LLM-populated later
-  confidence: number    // 1.0 = deterministic; < 1.0 = LLM inference
-  source: "static" | "git" | "llm"
-  metadata?: Record<string, unknown>
+  layer?: string        // "presentation" | "business" | "data" | "config" | "test" | "infra" — heuristic or LLM
+  responsibility?: string  // LLM-populated (stored in semantic_enrichments, joined on read)
+  confidence: number    // 1.0 = deterministic static analysis; < 1.0 = LLM inference
+  dataSource: "static" | "git" | "llm"
+  metadata?: Record<string, unknown>  // churnScore, hot, authorCount, etc.
 }
 ```
+
+### NodeType
+
+```
+"file" | "function" | "class" | "interface" | "variable" | "route" | "package"
+```
+
+`interface` is added as a first-class V1 node type (TypeScript `interface` declarations).
 
 ### Edge
 
 ```ts
 interface Edge {
-  id: string            // auto-generated
+  id: string            // "${source}::${type}::${target}" — deterministic, deduplication-safe
   source: string        // node id
   target: string        // node id
   type: EdgeType
   confidence: number
-  source_type: "static" | "git" | "llm"
+  dataSource: "static" | "git" | "llm"
   metadata?: Record<string, unknown>
 }
 ```
 
-### EdgeType
-
-Supported from the start, extensible by adding new values:
+### EdgeType (string union — extensible without breaking changes)
 
 ```
-imports | exports | calls | depends_on | extends | implements |
-instantiates | exposes | handles | tests | reads_from | writes_to |
-communicates_with | configured_by | related_to
+"imports" | "exports" | "calls" | "depends_on" | "extends" | "implements" |
+"instantiates" | "exposes" | "handles" | "tests" | "reads_from" | "writes_to" |
+"communicates_with" | "configured_by" | "related_to"
 ```
+
+---
+
+## Persistence Abstraction
+
+The persistence layer is behind an interface so the storage backend can be replaced (e.g. a future graph database, in-memory store for testing):
+
+```ts
+interface PersistenceAdapter {
+  saveNodes(nodes: Node[]): void
+  saveEdges(edges: Edge[]): void
+  saveGitCommits(commits: GitCommit[]): void
+  saveGitFileStats(stats: GitFileStats[]): void
+  saveFileCache(entries: FileCacheEntry[]): void
+  saveSemanticEnrichments(enrichments: SemanticEnrichment[]): void
+  readGraph(): Graph
+  readFileCacheEntries(): FileCacheEntry[]
+  close(): void
+}
+```
+
+`SqlitePersistenceAdapter` in `src/persistence/sqlite.ts` is the V1 implementation. The engine depends only on `PersistenceAdapter`.
+
+---
+
+## LLM Architecture
+
+The LLM is never given the full repository. The flow for `--semantic` mode:
+
+```
+Graph (persisted in context.db)
+  ↓
+Query Engine (src/query/index.ts)
+  ↓  targeted queries: "give me all nodes + edges for this file"
+Context Builder (src/llm/context.ts)
+  ↓  assembles a focused prompt from query results (imports, exports, callers, structure)
+LLM Adapter (src/llm/adapter.ts)
+  ↓  sends only that slice
+Semantic Enrichment
+  ↓  stored back in semantic_enrichments table with llmProvider + modelId tags
+```
+
+### LLMAdapter interface
+
+```ts
+interface LLMAdapter {
+  /** Summarize a module's responsibility from its graph context slice */
+  summarizeModule(context: ModuleContext): Promise<string>
+  /** Infer the architectural layer of a file from its imports/exports */
+  classifyLayer(context: ModuleContext): Promise<string>
+  /** [future] Explain a diff in the context of the graph — used by debob review */
+  explainDiff(diff: string, context: DiffContext): Promise<string>
+  /** [future] Answer a free-form question using graph context — used by debob explain */
+  answerQuestion(question: string, context: QueryContext): Promise<string>
+}
+```
+
+`ModuleContext`, `DiffContext`, `QueryContext` are structured types, not raw strings — the context builder populates them from graph queries. IBM watsonx is the V1 provider. Provider credentials come from environment variables only (`WATSONX_API_KEY`, `WATSONX_PROJECT_ID`, `WATSONX_ENDPOINT`) — never stored in `.debob/`.
 
 ---
 
 ## Analyzer Plugin Interface
 
-Each language analyzer implements:
-
 ```ts
 interface LanguageAnalyzer {
-  language: string                          // e.g. "typescript"
-  extensions: string[]                      // e.g. [".ts", ".tsx", ".js", ".jsx"]
+  readonly language: string          // e.g. "typescript"
+  readonly extensions: string[]      // e.g. [".ts", ".tsx", ".js", ".jsx"]
   analyze(filePath: string, source: string): AnalysisResult
 }
 
@@ -159,7 +255,9 @@ interface AnalysisResult {
 }
 ```
 
-The engine discovers which analyzer to use based on file extension. New languages are added by implementing `LanguageAnalyzer` and registering it.
+V1 extracts from TS/JS: `import_declaration` → `imports` edges, `export` → `exports` edges, `function_declaration` → function nodes, `class_declaration` → class nodes, `interface_declaration` → interface nodes, `extends_clause` → `extends` edges, `implements_clause` → `implements` edges.
+
+New languages (Python, Rust, etc.) are added by writing a new class that implements `LanguageAnalyzer` and registering its extensions with the engine. No other code changes required.
 
 ---
 
@@ -172,29 +270,29 @@ The engine discovers which analyzer to use based on file extension. New language
 **Status:** `[ ] pending`
 
 **Intent:**
-Establish the TypeScript project with all dependencies, build configuration, and directory structure. This is the foundation every other sub-task builds on.
+Establish the TypeScript project with all dependencies, build configuration, and directory structure. Every other sub-task depends on this.
 
 **Expected Outcomes:**
-- `package.json` with all required dependencies and `bin` entry
-- `tsconfig.json` configured for Node.js ESM output
-- `tsup.config.ts` for building
-- Directory skeleton created
+- `package.json` with all dependencies and `bin` entry
+- `tsconfig.json` in strict ESM mode
+- `tsup.config.ts` building to `dist/`
+- All source directories created
 - `npm install` succeeds
+- `npm run build` produces a runnable `dist/bin/debob.js`
 
 **Todo List:**
-1. Create `package.json` with name `debob`, version `0.1.0`, type `module`, bin entry pointing to `dist/bin/debob.js`
-2. Add runtime dependencies: `commander`, `simple-git`, `better-sqlite3`, `tree-sitter`, `tree-sitter-typescript`, `chalk`, `ora`, `glob`
-3. Add dev dependencies: `typescript`, `tsup`, `tsx`, `@types/node`, `@types/better-sqlite3`
-4. Create `tsconfig.json` targeting ES2022, module resolution `bundler`, strict mode on
-5. Create `tsup.config.ts` building `bin/debob.ts` and `src/**` to `dist/`
-6. Create all empty directory placeholders (`src/engine`, `src/scanner`, `src/analyzers/typescript`, `src/git`, `src/graph`, `src/persistence`, `src/query`, `src/llm/providers`, `src/types`, `docs`)
-7. Add `npm run build`, `npm run dev`, `npm run typecheck` scripts
-8. Create a minimal `README.md`
+1. Create `package.json`: name `debob`, version `0.1.0`, `"type": "module"`, bin entry `"debob": "dist/bin/debob.js"`
+2. Runtime dependencies: `commander`, `simple-git`, `better-sqlite3`, `tree-sitter`, `tree-sitter-typescript`, `chalk`, `ora`, `glob`
+3. Dev dependencies: `typescript`, `tsup`, `tsx`, `@types/node`, `@types/better-sqlite3`
+4. `tsconfig.json`: target ES2022, `moduleResolution: "bundler"`, `strict: true`, `outDir: "dist"`
+5. `tsup.config.ts`: entry `["bin/debob.ts", "src/**/*.ts"]`, format `["esm"]`, `dts: true`, `sourcemap: true`
+6. Scripts: `build`, `dev` (tsx), `typecheck` (tsc --noEmit), `start` (node dist/bin/debob.js)
+7. Create directory skeleton for all `src/` subdirectories and `docs/`
+8. Create a minimal `README.md` placeholder
 
 **Relevant Context:**
-- Entry point: `bin/debob.ts`
-- Build output: `dist/`
-- npx invocation: `npx debob init`
+- `npx debob init` will invoke `dist/bin/debob.js`
+- tree-sitter native bindings require Node.js ≥18
 
 ---
 
@@ -203,28 +301,32 @@ Establish the TypeScript project with all dependencies, build configuration, and
 **Status:** `[ ] pending`
 
 **Intent:**
-Define all shared TypeScript types used across the system. Establishing types first ensures all subsequent sub-tasks have a consistent, compile-checked contract.
+Define all shared TypeScript types. Types are established before implementation so all sub-tasks compile against a consistent contract.
 
 **Expected Outcomes:**
-- `src/types/index.ts` — all graph types exported
-- `src/graph/types.ts` — NodeType, EdgeType enums/unions
-- All types compile cleanly
+- `src/graph/types.ts` — NodeType, EdgeType, Node, Edge, Graph
+- `src/analyzers/interface.ts` — LanguageAnalyzer, AnalysisResult
+- `src/persistence/interface.ts` — PersistenceAdapter, FileCacheEntry, SemanticEnrichment
+- `src/git/index.ts` (type section) — GitCommit, GitFileStats, GitMetadata
+- `src/scanner/index.ts` (type section) — ScannedFile
+- `src/llm/adapter.ts` — LLMAdapter, LLMConfig, ModuleContext, DiffContext, QueryContext
+- `src/types/index.ts` re-exports everything
+- All types compile cleanly with `tsc --noEmit`
 
 **Todo List:**
-1. Define `NodeType` union in `src/graph/types.ts`
-2. Define `EdgeType` union in `src/graph/types.ts`
-3. Define `Node` interface in `src/graph/types.ts`
-4. Define `Edge` interface in `src/graph/types.ts`
-5. Define `Graph` interface (nodes map + edges array) in `src/graph/types.ts`
-6. Define `AnalysisResult` interface in `src/analyzers/interface.ts`
-7. Define `LanguageAnalyzer` interface in `src/analyzers/interface.ts`
-8. Define `GitFileStats`, `GitCommit` interfaces in `src/git/index.ts`
-9. Re-export everything from `src/types/index.ts`
+1. `src/graph/types.ts`: NodeType union, EdgeType union, Node interface, Edge interface, Graph interface `{ nodes: Map<string, Node>, edges: Edge[] }`
+2. `src/analyzers/interface.ts`: LanguageAnalyzer interface, AnalysisResult interface
+3. `src/persistence/interface.ts`: PersistenceAdapter interface, FileCacheEntry `{ filePath, contentHash, analyzerVersion, schemaVersion, lastAnalyzedAt, lastGitCommit }`, SemanticEnrichment `{ nodeId, field, value, llmProvider, modelId, createdAt }`
+4. `src/git/index.ts` (types only): GitCommit `{ hash, authorName, authorEmailHash, date, subject, filesChanged }`, GitFileStats `{ filePath, commitCount, churnScore, authorCount, lastModifiedAt }`, GitMetadata `{ commits, fileStats }`
+5. `src/scanner/index.ts` (types only): ScannedFile `{ path, relativePath, extension, language, sizeBytes, contentHash }`
+6. `src/llm/adapter.ts` (types + interface): LLMConfig, ModuleContext `{ filePath, imports, exports, declarations, gitStats? }`, DiffContext, QueryContext, LLMAdapter interface
+7. `src/types/index.ts`: re-export from all of the above
 
 **Relevant Context:**
-- Graph model described above
-- `confidence` and `source` fields are critical — they distinguish deterministic from LLM-inferred data
-- EdgeType must be extensible (use a string union, not an enum, to allow future values without breaking)
+- `dataSource` field (not `source`) on Node and Edge to avoid collision with built-in `source` property names
+- `confidence: 1.0` for all deterministic outputs; LLM outputs use `confidence < 1.0`
+- EdgeType is a string union (not enum) so new values can be added without breaking existing consumers
+- `FileCacheEntry` is the key data structure enabling incremental updates — get this right
 
 ---
 
@@ -233,30 +335,37 @@ Define all shared TypeScript types used across the system. Establishing types fi
 **Status:** `[ ] pending`
 
 **Intent:**
-Implement the `.debob/` directory management and SQLite schema. This layer is the single source of truth for all extracted knowledge.
+Implement `SqlitePersistenceAdapter` behind the `PersistenceAdapter` interface. This is the canonical V1 storage backend. The interface abstraction means tests and future backends never touch SQLite directly.
 
 **Expected Outcomes:**
-- `src/persistence/schema.ts` contains table definitions
-- `src/persistence/index.ts` exposes `openDb`, `saveGraph`, `saveGitStats`, `saveGitCommits`, `readGraph`, `readManifest`, `writeManifest`
-- Running `openDb(repoPath)` creates `.debob/` and initializes the schema if it does not exist
-- `manifest.json` written alongside `context.db`
+- `src/persistence/schema.ts`: all `CREATE TABLE IF NOT EXISTS` statements + schema version constant
+- `src/persistence/sqlite.ts`: `SqlitePersistenceAdapter` implementing `PersistenceAdapter`
+- `openDb(repoPath)` creates `.debob/` dir and runs schema migrations
+- All save operations are upserts (INSERT OR REPLACE) keyed on stable IDs
+- `readGraph()` reconstructs Node/Edge structures from rows
+- `writeManifest` / `readManifest` in `src/persistence/sqlite.ts` for `manifest.json`
+- Unit-testable: adapter can be constructed with any db path, not just `.debob/`
 
 **Todo List:**
-1. Implement `openDb(repoPath: string): Database` in `src/persistence/index.ts` — creates `.debob/` dir, opens `context.db`, runs migrations
-2. Define `CREATE TABLE IF NOT EXISTS` statements for `nodes`, `edges`, `git_commits`, `git_file_stats`, `manifest` in `src/persistence/schema.ts`
-3. Implement `saveNodes(db, nodes[])` — upsert by node id
-4. Implement `saveEdges(db, edges[])` — upsert by edge id
-5. Implement `saveGitCommits(db, commits[])` — upsert by hash
-6. Implement `saveGitFileStats(db, stats[])` — upsert by filePath
-7. Implement `readGraph(db): Graph` — reconstruct Node/Edge arrays from db
-8. Implement `writeManifest(repoPath, data)` — writes `.debob/manifest.json`
-9. Implement `readManifest(repoPath)` — reads `.debob/manifest.json`
+1. `src/persistence/schema.ts`: define `SCHEMA_VERSION = 1` constant and all `CREATE TABLE IF NOT EXISTS` DDL for: `nodes`, `edges`, `git_commits`, `git_file_stats`, `file_cache`, `semantic_enrichments`
+2. `src/persistence/sqlite.ts`: implement `openDb(repoPath): Database` — mkdirSync `.debob/`, open `context.db`, run schema statements, return db handle
+3. Implement `SqlitePersistenceAdapter` class taking a `Database` in constructor
+4. `saveNodes`: INSERT OR REPLACE, serialize `metadata` as JSON column
+5. `saveEdges`: INSERT OR REPLACE, serialize `metadata` as JSON column
+6. `saveGitCommits`: INSERT OR REPLACE by `hash`
+7. `saveGitFileStats`: INSERT OR REPLACE by `filePath`
+8. `saveFileCache`: INSERT OR REPLACE by `filePath` — this is what makes incremental updates possible
+9. `saveSemanticEnrichments`: INSERT OR REPLACE by `(nodeId, field)` — LLM outputs clearly separated
+10. `readGraph()`: SELECT all nodes + edges, deserialize JSON columns, reconstruct `Graph`
+11. `readFileCacheEntries()`: SELECT all from `file_cache`
+12. `writeManifest(repoPath, data)`: JSON.stringify to `.debob/manifest.json`
+13. `readManifest(repoPath)`: read and parse `.debob/manifest.json`, return null if absent
 
 **Relevant Context:**
-- Use `better-sqlite3` (synchronous API — no async/await needed)
-- `.debob/` must be created inside the target repo root, not inside the debob project itself
-- Schema version field in `manifest` table allows future migrations
-- Node `id` must be stable across runs (use relative file path, or `relativePath::symbolName`)
+- `better-sqlite3` is synchronous — no async/await; wrap in try/catch for error boundaries
+- `metadata` and `filesChanged` columns stored as JSON text — parse on read
+- Schema version stored in `manifest.json` so future migrations can detect the gap
+- `file_cache.contentHash` is SHA-256 of the file's UTF-8 content — computed in the scanner, stored here
 
 ---
 
@@ -265,27 +374,26 @@ Implement the `.debob/` directory management and SQLite schema. This layer is th
 **Status:** `[ ] pending`
 
 **Intent:**
-Implement the file system scanner that discovers all relevant source files in a repository. This is the first step of `debob init`.
+Implement the file system scanner that discovers all relevant source files and computes their content hashes. The hash is stored in `file_cache` and is the primary mechanism for detecting what changed on future runs.
 
 **Expected Outcomes:**
-- `src/scanner/index.ts` exports `scanRepository(repoRoot: string): ScannedFile[]`
-- Returns a list of files with path, extension, size, and language hint
-- Respects `.gitignore` (skip ignored files)
-- Skips `node_modules`, `.git`, `.debob`, `dist`, `build`, `coverage`, and other non-source directories by default
-- Correctly identifies TypeScript/JavaScript files for the analyzer
+- `src/scanner/index.ts` exports `scanRepository(repoRoot: string): Promise<ScannedFile[]>`
+- Returns all source files with path, extension, language, size, and SHA-256 content hash
+- Respects standard exclusion patterns (node_modules, .git, .debob, dist, build, coverage)
+- Correctly classifies TS/JS extensions for the analyzer
 
 **Todo List:**
 1. Implement `scanRepository(repoRoot)` using `glob` to find all files recursively
-2. Apply exclusion patterns: `node_modules`, `.git`, `.debob`, `dist`, `build`, `coverage`, `*.min.js`, `*.map`
-3. Detect language from extension: `.ts`/`.tsx` → `typescript`, `.js`/`.jsx`/`.mjs`/`.cjs` → `javascript`
-4. Return `ScannedFile[]` with `{ path, relativePath, extension, language, sizeBytes }`
-5. Log count of files found per language
-6. Add `ScannedFile` type to shared types
+2. Exclusion list: `node_modules/**`, `.git/**`, `.debob/**`, `dist/**`, `build/**`, `coverage/**`, `**/*.min.js`, `**/*.map`, `**/*.d.ts`
+3. For each file: read content, compute SHA-256 hash (Node.js `crypto.createHash('sha256')`), stat for size
+4. Language detection from extension: `.ts`/`.tsx` → `"typescript"`, `.js`/`.jsx`/`.mjs`/`.cjs` → `"javascript"`, others → `"unknown"`
+5. Return `ScannedFile[]` including `contentHash`
+6. Filter out files with `language: "unknown"` from analysis (still record in file list but don't pass to analyzers)
 
 **Relevant Context:**
-- The scanner should work against any target repository, not just the debob repo itself
-- `repoRoot` is passed in from the CLI (defaults to `process.cwd()`)
-- Use `glob` package's `ignore` option to skip excluded paths
+- `ScannedFile.contentHash` is the SHA-256 of the file's raw UTF-8 content — must be identical on re-scan if file unchanged
+- The scanner does not check `file_cache` — the engine decides whether to re-analyze based on hash comparison
+- `repoRoot` is passed from the CLI, defaults to `process.cwd()`
 
 ---
 
@@ -294,34 +402,33 @@ Implement the file system scanner that discovers all relevant source files in a 
 **Status:** `[ ] pending`
 
 **Intent:**
-Implement the first `LanguageAnalyzer` plugin for TypeScript and JavaScript using tree-sitter. Extracts nodes (files, functions, classes) and edges (imports, exports, calls) deterministically from source code.
+Implement `TypeScriptAnalyzer`, the V1 `LanguageAnalyzer` plugin, using tree-sitter. Extracts nodes and edges deterministically from TS/JS source. Covers the confirmed V1 scope: imports, exports, functions, classes, interfaces, extends, implements.
 
 **Expected Outcomes:**
-- `src/analyzers/typescript/index.ts` exports a `TypeScriptAnalyzer` implementing `LanguageAnalyzer`
-- For each file, produces: one `file` node, N `function`/`class` nodes, import edges, export edges
-- All produced nodes/edges have `confidence: 1.0` and `source: "static"`
-- `src/analyzers/interface.ts` defines the `LanguageAnalyzer` interface
+- `src/analyzers/typescript/index.ts` exports `TypeScriptAnalyzer` implementing `LanguageAnalyzer`
+- For each file: one `file` node + N symbol nodes (function, class, interface)
+- Edges: `imports` (to resolved module paths or package nodes), `exports`, `extends`, `implements`
+- All outputs: `confidence: 1.0`, `dataSource: "static"`
+- External package imports produce `package` type target nodes
+- Layer hints assigned from path patterns
 
 **Todo List:**
-1. Implement `LanguageAnalyzer` interface in `src/analyzers/interface.ts`
-2. Initialize tree-sitter parser with TypeScript grammar in `TypeScriptAnalyzer`
-3. Parse each file and walk the AST to extract:
-   - `import_declaration` nodes → `imports` edges (source: current file, target: resolved module specifier)
-   - `export_declaration` nodes → `exports` edges
-   - `function_declaration` / `method_definition` / `arrow_function` assigned to variable → `function` nodes
-   - `class_declaration` → `class` nodes
-   - `extends_clause` → `extends` edges
-   - `implements_clause` → `implements` edges
-4. Resolve relative import paths to canonical relative paths within the repo
-5. Mark external package imports (e.g. `"react"`, `"express"`) as `package` nodes with `source: "static"`
-6. Assign a `layer` hint based on path patterns: `test`/`spec` → "test", `routes`/`controllers` → "presentation", `services` → "business", `models`/`schema` → "data", `config` → "config"
-7. Return `AnalysisResult` with all nodes and edges
+1. Initialize tree-sitter parser with TypeScript grammar (use TSX grammar for `.tsx` files)
+2. Implement `analyze(filePath, source): AnalysisResult`
+3. Always emit one `file` node with `id = relativePath`, `type: "file"`
+4. Walk AST for `import_declaration`: extract module specifier string → `imports` edge; if relative path, resolve to canonical repo-relative path; if bare specifier, create/reference a `package` node
+5. Walk AST for `export_statement` / `export_declaration`: emit `exports` edge from file node to exported symbol node (if named export) or mark file node as exporting
+6. Walk AST for `function_declaration`, `method_definition`, exported arrow functions assigned via `const x = () =>`: emit `function` nodes with `startLine`/`endLine`
+7. Walk AST for `class_declaration`: emit `class` node; check `extends_clause` → `extends` edge; check `implements_clause` → `implements` edge (one edge per implemented type)
+8. Walk AST for `interface_declaration`: emit `interface` node; check `extends_clause` → `extends` edge
+9. Assign `layer` hint: path contains `test`/`spec` → `"test"`, `route`/`controller` → `"presentation"`, `service` → `"business"`, `model`/`schema`/`entity` → `"data"`, `config` → `"config"`, `middleware` → `"infra"`
+10. Edge id: `"${sourceId}::${edgeType}::${targetId}"` — deterministic, deduplication-safe
 
 **Relevant Context:**
-- tree-sitter operates synchronously on a string of source text
-- `tree-sitter-typescript` exports both a TypeScript and TSX grammar
-- Keep the AST walker focused — don't try to resolve all call expressions in v1 (too complex without type info); focus on imports and declarations
-- Edge `id` should be `${source}::${type}::${target}` for deduplication
+- tree-sitter is synchronous; the `analyze` method is not async
+- `tree-sitter-typescript` package exports `.typescript` and `.tsx` grammars
+- Do NOT attempt to resolve `import type` through type system — treat as a regular import edge
+- Do NOT attempt call-graph extraction in V1 — too expensive without type info, deferred to future analyzer version
 
 ---
 
@@ -330,29 +437,30 @@ Implement the first `LanguageAnalyzer` plugin for TypeScript and JavaScript usin
 **Status:** `[ ] pending`
 
 **Intent:**
-Extract useful Git metadata from the repository: recent commits, per-file change frequency (churn), authors, and last-modified timestamps. This makes Git a first-class data source in the graph.
+Extract Git metadata: recent commits (up to configurable limit), per-file change frequency (churn), author counts, and last-modified timestamps. Author emails are SHA-256 hashed before storage.
 
 **Expected Outcomes:**
-- `src/git/index.ts` exports `extractGitMetadata(repoRoot): GitMetadata`
-- Returns recent commits (last 500 by default) and per-file stats
-- Per-file stats include: commit count, unique authors, last modified date, churn score
-- All git data stored in `git_commits` and `git_file_stats` tables
+- `src/git/index.ts` exports `extractGitMetadata(repoRoot, options): Promise<GitMetadata>`
+- Returns up to `maxCommits` commits and per-file stats
+- Author emails stored as SHA-256 hex digests, never in plaintext
+- Returns gracefully if directory is not a Git repo
 
 **Todo List:**
-1. Initialize `simple-git` with the repo root in `extractGitMetadata`
-2. Check that the directory is actually a Git repo; return empty result if not
-3. Fetch last 500 commits: hash, author name, author email, date, subject
-4. For each commit, fetch the list of changed files (using `--name-only`)
-5. Aggregate per-file stats: total commits touching file, unique authors set, last commit date
-6. Compute a `churnScore` = total commits touching the file (higher = more volatile)
-7. Return `GitMetadata { commits: GitCommit[], fileStats: GitFileStats[] }`
-8. Add `GitCommit` and `GitFileStats` type definitions
+1. `extractGitMetadata(repoRoot, { maxCommits = 500 })`: initialize `simple-git(repoRoot)`
+2. Check `git.checkIsRepo()` — return `{ commits: [], fileStats: [] }` if not a repo
+3. Fetch log: last `maxCommits` commits using `git.log({ maxCount: maxCommits, '--name-only': null })` to get changed files per commit
+4. For each commit: hash author email with `crypto.createHash('sha256').update(email).digest('hex')`
+5. Build `GitCommit[]`: `{ hash, authorName, authorEmailHash, date, subject, filesChanged: string[] }`
+6. Aggregate `GitFileStats`: for each file path seen across commits, count total commits, collect unique `authorEmailHash` set (count = authorCount), track latest commit date
+7. `churnScore = commitCount` (raw commit count — higher = more volatile)
+8. Return `GitMetadata { commits, fileStats }`
+9. Surface the last-analyzed commit hash in the return so the engine can store it in `file_cache` for incremental comparison
 
 **Relevant Context:**
-- Use `simple-git`'s `log` and `diff` APIs
-- Limit to 500 commits to keep init fast; make this configurable via options later
-- Do NOT read `.env` files, credential files, or any secrets — git log only
-- Store author email hashed (SHA-256) in the db to avoid storing PII directly
+- `simple-git` log with `--name-only` gives filenames changed per commit — parse from the log format
+- `authorCount` = size of the unique hashed-email set per file (hashing is consistent so set membership is valid)
+- Limit 500 commits is configurable via `InitOptions.maxCommits` — do not hardcode
+- Do NOT read any file content — only git log metadata
 
 ---
 
@@ -361,27 +469,30 @@ Extract useful Git metadata from the repository: recent commits, per-file change
 **Status:** `[ ] pending`
 
 **Intent:**
-Combine the outputs of the scanner, static analyzer, and git extractor into a unified, consistent graph. The graph builder is responsible for deduplication, node ID normalization, and merging git signals into graph nodes.
+Combine scanner output, all analyzer results, and Git metadata into a single deduplicated, consistent `Graph`. Merge Git signals into file nodes as metadata. Identify hot files.
 
 **Expected Outcomes:**
-- `src/graph/builder.ts` exports `buildGraph(scanResult, analysisResults, gitMetadata): Graph`
-- Deduplicates nodes by id
-- Merges git churn score and last-modified onto corresponding file nodes
-- Produces a `Graph` that can be directly persisted
+- `src/graph/builder.ts` exports `buildGraph(files, analysisResults, gitMetadata): Graph`
+- One canonical `file` node per scanned file
+- All symbol nodes from analysis merged and deduplicated by id
+- All edges merged and deduplicated by edge id
+- Each file node carries `metadata.churnScore`, `metadata.lastModifiedAt`, `metadata.authorCount`, `metadata.contentHash`
+- Hot files (churnScore in top 10%) marked `metadata.hot = true`
 
 **Todo List:**
-1. Implement `buildGraph(files, analysisResults, gitMetadata)` in `src/graph/builder.ts`
-2. Start with one `file` node per scanned file (id = relative path)
-3. Merge all nodes from `AnalysisResult[]` — deduplicate by id
-4. Merge all edges — deduplicate by edge id
-5. For each file node, look up `GitFileStats` and attach `churnScore`, `lastModified`, `authorCount` to `node.metadata`
-6. Identify and mark "hot files" (churnScore in top 10%) with `metadata.hot = true`
-7. Return the complete `Graph`
+1. Initialize graph: `nodes = new Map<string, Node>()`, `edges: Edge[] = []`
+2. For each `ScannedFile`, create/upsert a `file` node (`id = relativePath`)
+3. Merge all `AnalysisResult` nodes — if a node id already exists, keep the more detailed version (symbol nodes from analysis win over bare file nodes from scanner)
+4. Merge all `AnalysisResult` edges — deduplicate by edge id
+5. For each file node, look up its `GitFileStats` entry — attach `churnScore`, `lastModifiedAt`, `authorCount` to `metadata`; also attach `contentHash` from `ScannedFile`
+6. Compute churn top-10% threshold; mark qualifying file nodes with `metadata.hot = true`
+7. Ensure all edge `source`/`target` ids that refer to non-existent nodes create stub nodes (type `"package"` for external, `"file"` for internal missing files) rather than leaving dangling references
+8. Return `Graph { nodes, edges }`
 
 **Relevant Context:**
-- Node ids must be stable (always relative path from repo root)
-- Edges pointing to external packages (e.g. `node_modules/express`) should still be included but the target node gets `type: "package"`
-- The graph intentionally does NOT include LLM-derived data at this stage — that is a future enrichment pass
+- Node deduplication key is the `id` string — always the stable relative path or `"relativePath::SymbolName"`
+- External package stub nodes: id = `"pkg::express"`, type = `"package"`, `dataSource: "static"`, `confidence: 1.0`
+- The graph at this stage contains zero LLM-derived data — clearly all `dataSource: "static"` or `"git"`
 
 ---
 
@@ -390,30 +501,30 @@ Combine the outputs of the scanner, static analyzer, and git extractor into a un
 **Status:** `[ ] pending`
 
 **Intent:**
-Implement the engine that wires together scanner → analyzer → git → graph builder → persistence and drives the `debob init` workflow.
+Wire all subsystems together for `debob init`. Manages the pipeline: scan → analyze → git → build graph → persist → (optional) semantic enrichment. Returns a structured `InitResult` for the CLI to render.
 
 **Expected Outcomes:**
-- `src/engine/index.ts` exports `runInit(repoRoot: string, options: InitOptions): Promise<InitResult>`
-- Calls each subsystem in the correct order
-- Reports progress at each stage
-- Returns a structured `InitResult` summary
+- `src/engine/index.ts` exports `runInit(repoRoot, options): Promise<InitResult>`
+- Deterministic by default; calls LLM enrichment only when `options.semantic === true` and an `LLMAdapter` is provided
+- Progress reported via a passed-in `logger` callback (not direct console.log — CLI owns output)
+- Returns `InitResult` with full counts and summary data
 
 **Todo List:**
-1. Implement `runInit` in `src/engine/index.ts`
-2. Step 1: Validate `repoRoot` is a directory and contains `.git`
-3. Step 2: Call `scanRepository` — report file count
-4. Step 3: For each scanned file, run the appropriate `LanguageAnalyzer` — report analyzed file count
-5. Step 4: Call `extractGitMetadata` — report commit count
-6. Step 5: Call `buildGraph` — report node/edge count
-7. Step 6: Call `openDb` and persist nodes, edges, git commits, git file stats
-8. Step 7: Write `manifest.json` with version, timestamp, repoRoot, nodeCount, edgeCount
-9. Step 8: Return `InitResult` with counts and a list of top-level discoveries (hot files, package dependencies, layer distribution)
-10. Wrap each step with error handling — if a step fails, log a warning and continue where possible
+1. `runInit(repoRoot: string, options: InitOptions): Promise<InitResult>` where `InitOptions = { maxCommits?: number, verbose?: boolean, semantic?: boolean, llm?: LLMAdapter }`
+2. Step 1 — Validate: confirm `repoRoot` exists and contains `.git/`; throw descriptive error if not
+3. Step 2 — Scan: call `scanRepository(repoRoot)` → report file count by language
+4. Step 3 — Analyze: for each scanned file with a known language, find the registered `LanguageAnalyzer` and call `.analyze()` → collect `AnalysisResult[]`; skip files with no registered analyzer
+5. Step 4 — Git: call `extractGitMetadata(repoRoot, { maxCommits })` → report commit count
+6. Step 5 — Build graph: call `buildGraph(files, analysisResults, gitMetadata)` → report node/edge count
+7. Step 6 — Persist: `openDb(repoRoot)` → `new SqlitePersistenceAdapter(db)` → save nodes, edges, git commits, git file stats; save `file_cache` entries (one per scanned file: contentHash, analyzerVersion, schemaVersion, lastGitCommit)
+8. Step 7 — Semantic enrichment (only if `options.semantic && options.llm`): for each file node, call `buildModuleContext(node, graph)` from query layer → call `llm.summarizeModule(context)` and `llm.classifyLayer(context)` → save results to `semantic_enrichments` table via adapter
+9. Step 8 — Write manifest: call `writeManifest(repoRoot, { version, schemaVersion, initAt, nodeCount, edgeCount, fileCount, commitCount, semantic: options.semantic ?? false })`
+10. Step 9 — Return `InitResult { nodeCount, edgeCount, fileCount, commitCount, hotFiles, layerDistribution, packageDependencies, dbPath }`
 
 **Relevant Context:**
-- `InitOptions` should include: `{ maxCommits?: number, verbose?: boolean }`
-- The engine owns the progress reporter — pass an `ora` spinner or a simple logger
-- Keep the engine pure (no direct `console.log`) — let the CLI layer handle output
+- `analyzerVersion` = a constant string in each `LanguageAnalyzer` (e.g. `"ts-1.0"`) — stored in `file_cache` so future schema/analyzer changes trigger re-analysis
+- Register analyzers in a `Map<string, LanguageAnalyzer>` keyed by extension — engine selects by `ScannedFile.extension`
+- LLM context is built by the query layer per module — never concatenating all source files
 
 ---
 
@@ -422,64 +533,65 @@ Implement the engine that wires together scanner → analyzer → git → graph 
 **Status:** `[ ] pending`
 
 **Intent:**
-Implement the `bin/debob.ts` CLI entry point using `commander`. This is the user-facing surface of DeBob.
+Implement `bin/debob.ts` using `commander`. This is the user-facing surface. Drives `runInit`, renders the summary, and wires `--semantic` to pass an `LLMAdapter` to the engine.
 
 **Expected Outcomes:**
-- `npx debob init` runs successfully in any Git repository
-- `npx debob init --help` shows correct help text
-- Prints a rich summary after init: file counts, node/edge counts, hot files, detected layers, git stats
-- Exit code 0 on success, non-zero on failure
+- `npx debob init` runs in any Git repo, produces `.debob/context.db`, prints summary
+- `npx debob init --semantic` additionally runs LLM enrichment if `WATSONX_*` env vars are set
+- `npx debob --help` and `npx debob init --help` show correct help text
+- Exit code 0 on success, non-zero on error
+- Rich colored summary output using `chalk` and `ora`
 
 **Todo List:**
-1. Create `bin/debob.ts` with `#!/usr/bin/env node` shebang
-2. Set up `commander` program with name `debob`, version from `package.json`, description
-3. Add `init` command with options: `--repo <path>` (default: cwd), `--max-commits <n>` (default: 500), `--verbose`
-4. In the `init` action: call `runInit`, render the summary using `chalk` (colored output)
-5. Summary output should include:
-   - Files scanned (by language)
-   - Nodes in graph (by type)
-   - Edges in graph (by type)
-   - Git: total commits analyzed, top 5 hottest files
-   - Detected architectural layers
-   - Location of `.debob/context.db`
-6. Add placeholder `review` command that prints "coming soon" (wires the command name into the CLI now)
-7. Handle errors: catch engine errors, print with `chalk.red`, exit with code 1
+1. `bin/debob.ts`: `#!/usr/bin/env node` shebang, import `commander`, import `runInit`, import `createLLMAdapter`
+2. Program: name `debob`, version read from `package.json`, description
+3. `init` command options: `--repo <path>` (default `process.cwd()`), `--max-commits <n>` (default `500`), `--semantic` (flag), `--verbose`
+4. In `init` action:
+   a. If `--semantic`: read `WATSONX_API_KEY`, `WATSONX_PROJECT_ID`, `WATSONX_ENDPOINT` from env; create `WatsonxAdapter` via `createLLMAdapter`; warn if vars missing and skip semantic
+   b. Run `ora` spinner, call `runInit(repo, { maxCommits, semantic, llm, verbose })`
+   c. Render summary with `chalk`: files scanned by language, nodes by type, edges by type, git commit count, top 5 hot files, layer distribution, external package dependencies, db path
+5. Stub `review` command: `program.command('review').description('Review a diff against the repository graph (coming soon)').action(() => { console.log(chalk.yellow('debob review — coming soon')) })`
+6. Error handling: wrap action in try/catch → `chalk.red(err.message)` → `process.exit(1)`
 
 **Relevant Context:**
-- `bin/debob.ts` must be compiled to `dist/bin/debob.js` and marked executable
-- The `package.json` `bin` field must point to `dist/bin/debob.js`
-- Use `process.cwd()` as default repo root
+- `bin/debob.ts` compiles to `dist/bin/debob.js` — `tsup` must mark it executable (add `banner: { js: '#!/usr/bin/env node' }` in tsup config)
+- `package.json` `"bin"` field: `{ "debob": "./dist/bin/debob.js" }`
+- Credentials read from environment only — never prompt, never read from file, never store
 
 ---
 
-### Sub-Task 10 — LLM Adapter Interface + watsonx Stub
+### Sub-Task 10 — LLM Adapter Interface + watsonx Implementation
 
 **Status:** `[ ] pending`
 
 **Intent:**
-Define the LLM adapter interface and implement a stub for IBM watsonx. The interface must be clean enough that `debob review` and semantic enrichment can be built on top of it later without refactoring. The watsonx stub wires the interface but does not need to make real API calls in this sub-task.
+Implement the full LLM layer: the `LLMAdapter` interface, the `context.ts` context builder (graph → targeted prompt), and the IBM watsonx provider. This is what `--semantic` mode calls. The LLM never receives raw source files — only structured context slices assembled by the query layer.
 
 **Expected Outcomes:**
-- `src/llm/adapter.ts` defines `LLMAdapter` interface
-- `src/llm/providers/watsonx.ts` implements the interface (stub, logs "not yet implemented" or makes real call if API key is present)
-- `src/llm/index.ts` exports `createLLMAdapter(provider, config)` factory
-- Interface is documented with JSDoc comments explaining future use
+- `src/llm/adapter.ts`: `LLMAdapter` interface + context types (already typed in Sub-Task 2; add JSDoc here)
+- `src/llm/context.ts`: `buildModuleContext(node, graph): ModuleContext` — uses query helpers to assemble what the LLM needs for a given node
+- `src/llm/providers/watsonx.ts`: `WatsonxAdapter` implementing `LLMAdapter` using IBM watsonx REST API
+- `src/llm/index.ts`: `createLLMAdapter(provider, config): LLMAdapter` factory
+- All LLM outputs stored via `saveSemanticEnrichments` with `llmProvider` and `modelId` metadata
 
 **Todo List:**
-1. Define `LLMAdapter` interface in `src/llm/adapter.ts` with methods:
-   - `summarizeModule(filePath, sourceCode): Promise<string>` — generate responsibility summary
-   - `classifyLayer(filePath, imports, exports): Promise<string>` — infer architectural layer
-   - `explainDiff(diff, context): Promise<string>` — used later by `debob review`
-   - `answerQuestion(question, context): Promise<string>` — used later by `debob explain`
-2. Define `LLMConfig` type: `{ provider: string, apiKey?: string, modelId?: string, endpoint?: string }`
-3. Implement `WatsonxAdapter` in `src/llm/providers/watsonx.ts` — use `@ibm-cloud/watsonx-ai` SDK or `fetch` against the REST API; stub the methods if SDK not yet wired
-4. Implement `createLLMAdapter(provider, config): LLMAdapter` factory in `src/llm/index.ts`
-5. Document which methods are used by which future commands in JSDoc
+1. `src/query/index.ts`: implement `getNodeNeighbours(graph, nodeId, depth): Node[]`, `getNodeEdges(graph, nodeId): Edge[]`, `getFileImports(graph, filePath): string[]`, `getFileExports(graph, filePath): string[]` — these are the primitives the context builder uses
+2. `src/llm/context.ts`: `buildModuleContext(node, graph, gitStats?): ModuleContext` — assembles `{ filePath, imports: string[], exports: string[], declarations: { name, type }[], gitStats? }` from graph query results
+3. `src/llm/adapter.ts`: add JSDoc to each method documenting which debob command uses it and what context it expects
+4. `src/llm/providers/watsonx.ts`: implement `WatsonxAdapter`:
+   - Constructor takes `LLMConfig` (`apiKey`, `projectId`, `endpoint`, `modelId`)
+   - `summarizeModule(ctx)`: build a structured prompt from `ModuleContext` fields (not raw source); call `POST {endpoint}/ml/v1/text/generation` with `model_id`, project_id, input, parameters
+   - `classifyLayer(ctx)`: similar — prompt from imports/exports/declarations only
+   - `explainDiff` and `answerQuestion`: stub with `throw new Error('not yet implemented')` — interfaces defined, implementations deferred to review/explain sub-tasks
+5. `src/llm/index.ts`: `createLLMAdapter(provider: string, config: LLMConfig): LLMAdapter` — switch on `provider`, return `new WatsonxAdapter(config)` for `"watsonx"`, throw for unknown providers
+6. Watsonx prompt format: structured JSON/text including file path, import list, export list, declaration names — not source code
 
 **Relevant Context:**
-- IBM watsonx AI REST API: `POST /ml/v1/text/generation` with `model_id`, `input`, `parameters`
-- The watsonx adapter will need: `WATSONX_API_KEY`, `WATSONX_PROJECT_ID`, `WATSONX_ENDPOINT` from environment variables (never stored in `.debob/`)
-- Do NOT call the LLM during `debob init` in v1 — the engine should accept an optional `llm?: LLMAdapter` and skip semantic enrichment if absent
+- IBM watsonx text generation endpoint: `POST /ml/v1/text/generation?version=2023-05-29`
+- Request body: `{ "model_id": "...", "project_id": "...", "input": "...", "parameters": { "max_new_tokens": 256 } }`
+- Auth: `Authorization: Bearer {apiKey}` header
+- Credentials from env only: `WATSONX_API_KEY`, `WATSONX_PROJECT_ID`, `WATSONX_ENDPOINT`
+- The prompt must describe the module context in structured terms — not dump source code
 
 ---
 
@@ -488,55 +600,53 @@ Define the LLM adapter interface and implement a stub for IBM watsonx. The inter
 **Status:** `[ ] pending`
 
 **Intent:**
-Write the `docs/architecture.md` that explains DeBob's design to future contributors and AI agents. This document should be the authoritative reference for how the system works and how to extend it.
+Write `docs/architecture.md` and finalize `README.md`. This document is the primary reference for future contributors and AI agents working on DeBob.
 
 **Expected Outcomes:**
-- `docs/architecture.md` explains: system overview, component responsibilities, graph model, `.debob/` format, how to add a new language analyzer, how to add a new LLM provider, how `debob review` will be built
+- `docs/architecture.md`: comprehensive, accurate, covers every component, the graph model, the db schema, incremental update design, LLM architecture, and extension guides
+- `README.md`: quick-start, install, usage, `--semantic` usage, contribution pointer
 
 **Todo List:**
-1. Write system overview section
-2. Document each component (scanner, analyzer, git, graph, persistence, query, llm, cli)
-3. Document the graph model (Node, Edge, NodeType, EdgeType)
-4. Document the `.debob/` directory and `context.db` schema
-5. Write a "How to add a language analyzer" extension guide
-6. Write a "How to add an LLM provider" extension guide
-7. Write a "How debob review will work" forward-looking section
-8. Update `README.md` with quick-start instructions
+1. Architecture doc sections: System Overview, Core Principle (deterministic → graph → targeted retrieval → LLM), Component Responsibilities, Graph Model, `.debob/` Schema, Incremental Update Design, LLM Architecture (emphasize "never full repo"), How to Add a Language Analyzer, How to Add an LLM Provider, How `debob review` will be built on this foundation
+2. Include the `file_cache` table design and its role in incremental updates
+3. Include the `semantic_enrichments` table design and why LLM outputs are stored separately from static facts
+4. Extension guide: "Adding Python support" — implement `LanguageAnalyzer`, register extensions, done
+5. `README.md`: `npx debob init`, `npx debob init --semantic`, `npx debob init --repo /path/to/repo`, env vars for watsonx, what `.debob/` contains
 
 **Relevant Context:**
-- This document is also useful context for an AI agent working on this codebase
-- Keep it factual — describe what exists, not what is planned (except in the "future" sections)
+- Keep factual — describe what exists; label "future" sections clearly
+- This doc is also useful as LLM context for agents working on the debob codebase itself
 
 ---
 
 ## Implementation Order
 
 ```
-1 → Project Scaffold
-2 → Shared Types
-3 → SQLite Persistence Layer
-4 → Repository Scanner
-5 → TypeScript/JS Static Analyzer
-6 → Git Metadata Extractor
-7 → Graph Builder
-8 → Core Engine Orchestrator
-9 → CLI Entry Point
-10 → LLM Adapter Interface + watsonx Stub
-11 → Architecture Documentation
+1 → Project Scaffold                          (foundation)
+2 → Shared Types                              (depends on 1)
+3 → SQLite Persistence Layer                  (depends on 1, 2)
+4 → Repository Scanner                        (depends on 1, 2)       ┐
+5 → TypeScript/JS Static Analyzer             (depends on 1, 2)       ├─ parallel
+6 → Git Metadata Extractor                    (depends on 1, 2)       ┘
+7 → Graph Builder                             (depends on 2, 4, 5, 6)
+8 → Core Engine Orchestrator                  (depends on 3, 4, 5, 6, 7)
+9 → CLI Entry Point                           (depends on 8)
+10 → LLM Adapter + watsonx + Context Builder  (depends on 1, 2, 3, 7)
+11 → Architecture Documentation               (depends on all)
 ```
-
-Each sub-task depends only on earlier ones. Sub-tasks 4, 5, 6 can proceed in parallel after sub-tasks 1 and 2 are complete.
 
 ---
 
 ## Design Principles Summary
 
-| Principle | How it is enforced |
+| Principle | Enforcement |
 |---|---|
-| Explainability | Every node/edge carries `confidence` + `source` fields |
-| Incremental updates | SQLite upserts by stable id — future `debob update` reruns only changed files |
-| Language extensibility | `LanguageAnalyzer` interface — new grammars are plugins |
-| LLM independence | Graph is fully populated from static analysis; LLM is an optional enrichment layer |
-| Persistent context | `.debob/context.db` is the knowledge artifact; designed to be committed or shared |
-| Privacy | Git metadata stored with hashed author emails; no secrets, no `.env` values stored |
-| Git as first-class data | Git churn, authorship, commit history attached to graph nodes |
+| Deterministic first | All static analysis outputs carry `confidence: 1.0`, `dataSource: "static"`. LLM outputs: `confidence < 1.0`, `dataSource: "llm"`, stored in separate `semantic_enrichments` table |
+| Never send full repo to LLM | Context builder assembles targeted slices from graph queries. LLM never receives raw source files |
+| Incremental update ready | `file_cache` stores content hash + analyzer version + schema version per file. Future `debob update` skips unchanged files |
+| Language extensibility | `LanguageAnalyzer` interface — new grammars are plugins registered by extension |
+| Persistence abstraction | Engine depends on `PersistenceAdapter` interface, not `better-sqlite3` directly |
+| LLM independence | Full graph built from static analysis alone. `--semantic` is additive enrichment |
+| Privacy | Author emails SHA-256 hashed. No secrets, tokens, or `.env` values ever written to `.debob/` |
+| Git as first-class data | Churn, authorship, commit history attached to graph nodes via `file_cache` and `git_file_stats` |
+| Explainability | Every node/edge carries `confidence` + `dataSource` — every inference is traceable to its origin |
