@@ -33,6 +33,7 @@ The LLM **never receives the full repository**. The graph + query layer assemble
 | AST parsing | `web-tree-sitter@0.22.6` + `tree-sitter-wasms@0.1.13` (WASM) |
 | Git | `simple-git` |
 | CLI | `commander` |
+| Ignore rules | `ignore@^5.3.2` (gitignore-spec parser — used by scanner) |
 | LLM (V1) | IBM watsonx REST API (provider-agnostic adapter) |
 
 > **Why WASM?** `better-sqlite3` and native `tree-sitter` both require Visual Studio / node-gyp
@@ -51,7 +52,7 @@ The LLM **never receives the full repository**. The graph + query layer assemble
 | 1 | Project Scaffold | ✅ done |
 | 2 | Shared Types | ✅ done |
 | 3 | SQLite Persistence Layer | ✅ done |
-| 4 | Repository Scanner | ✅ done |
+| 4 | Repository Scanner | ✅ done (+ hardening: gitignore, size cap, extension allowlist) |
 | 5 | TypeScript/JS Static Analyzer | ✅ done |
 | 6 | Git Metadata Extractor | ✅ done |
 | 7 | Graph Builder | ⬜ pending — **NEXT** |
@@ -67,13 +68,15 @@ The LLM **never receives the full repository**. The graph + query layer assemble
 ```
 .gitignore                          ← dist/, node_modules/, .debob/, .env, bob_sessions/,
                                        _test_*.mjs, _test_*.ts, _scratch_*.mjs
-.bobignore
+.debobignore                        ← user-facing debob-specific ignore file (gitignore syntax)
 package.json                        ← debob 0.1.0, ESM, bin: dist/bin/debob.js
                                        web-tree-sitter pinned to EXACT "0.22.6"
+                                       ignore@^5.3.2 added for scanner gitignore support
 tsconfig.json                       ← ES2022, moduleResolution: bundler, strict
 tsup.config.ts                      ← entry: bin/debob.ts + src/**, format: esm
 README.md                           ← quick-start, commands, watsonx env vars
 debob-plan.md                       ← full architecture plan + all sub-task specs
+scanner-hardening-plan.md           ← completed plan: gitignore respect + binary/huge-file guards
 PROGRESS.md                         ← this file
 
 bin/
@@ -110,6 +113,8 @@ src/
   scanner/
     types.ts                        ← ScannedFile interface
     index.ts                        ← scanRepository(), summarizeByLanguage(), ScanOptions
+                                       DEFAULT_IGNORE globs, TEXT_EXTENSIONS allowlist,
+                                       MAX_FILE_BYTES (1 MB) cap, .gitignore/.debobignore filter
 
   llm/
     adapter.ts                      ← LLMAdapter interface, LLMConfig, ModuleContext,
@@ -125,6 +130,15 @@ docs/                               ← (empty — Sub-Task 11)
 ---
 
 ## Key Implementation Notes
+
+### Scanner Exclusion Behaviour
+- Files are excluded by **four layered guards** in cheapest-first order:
+  1. `DEFAULT_IGNORE` + `extraIgnore` glob patterns — applied by `glob` before any file I/O
+  2. `.gitignore` / `.debobignore` post-filter — via `ignore` package (`respectGitignore: true` by default)
+  3. `TEXT_EXTENSIONS` allowlist — extension not in set → skip (no `statSync` call)
+  4. `MAX_FILE_BYTES` (1 MB) size cap — checked after `statSync`, before `readFileSync`
+- To disable gitignore filtering in tests: `scanRepository(root, { respectGitignore: false })`
+- `.debobignore` uses standard gitignore syntax; ship it empty, users add project-specific rules
 
 ### WASM ABI Compatibility (CRITICAL)
 - `web-tree-sitter` MUST stay at `"0.22.6"` (exact, no caret)

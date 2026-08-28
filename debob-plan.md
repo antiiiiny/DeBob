@@ -371,29 +371,39 @@ Implement `SqlitePersistenceAdapter` behind the `PersistenceAdapter` interface. 
 
 ### Sub-Task 4 — Repository Scanner
 
-**Status:** `[x] done`
+**Status:** `[x] done` (including post-completion hardening — see `scanner-hardening-plan.md`)
 
 **Intent:**
 Implement the file system scanner that discovers all relevant source files and computes their content hashes. The hash is stored in `file_cache` and is the primary mechanism for detecting what changed on future runs.
 
 **Expected Outcomes:**
-- `src/scanner/index.ts` exports `scanRepository(repoRoot: string): Promise<ScannedFile[]>`
+- `src/scanner/index.ts` exports `scanRepository(repoRoot: string, options?: ScanOptions): Promise<ScannedFile[]>`
 - Returns all source files with path, extension, language, size, and SHA-256 content hash
 - Respects standard exclusion patterns (node_modules, .git, .debob, dist, build, coverage)
+- Respects `.gitignore` and `.debobignore` rules at scan time (via `ignore` npm package)
+- Skips files over 1 MB before calling `readFileSync`
+- Skips files whose extension is not in the `TEXT_EXTENSIONS` allowlist (binary/non-source files)
 - Correctly classifies TS/JS extensions for the analyzer
 
 **Todo List:**
-1. Implement `scanRepository(repoRoot)` using `glob` to find all files recursively
-2. Exclusion list: `node_modules/**`, `.git/**`, `.debob/**`, `dist/**`, `build/**`, `coverage/**`, `**/*.min.js`, `**/*.map`, `**/*.d.ts`
-3. For each file: read content, compute SHA-256 hash (Node.js `crypto.createHash('sha256')`), stat for size
-4. Language detection from extension: `.ts`/`.tsx` → `"typescript"`, `.js`/`.jsx`/`.mjs`/`.cjs` → `"javascript"`, others → `"unknown"`
-5. Return `ScannedFile[]` including `contentHash`
-6. Filter out files with `language: "unknown"` from analysis (still record in file list but don't pass to analyzers)
+1. Implement `scanRepository(repoRoot)` using `glob` to find all files recursively ✓
+2. Exclusion list: `node_modules/**`, `.git/**`, `.debob/**`, `dist/**`, `build/**`, `coverage/**`, `**/*.min.js`, `**/*.map`, `**/*.d.ts` ✓
+3. For each file: read content, compute SHA-256 hash (Node.js `crypto.createHash('sha256')`), stat for size ✓
+4. Language detection from extension: `.ts`/`.tsx` → `"typescript"`, `.js`/`.jsx`/`.mjs`/`.cjs` → `"javascript"`, others → `"unknown"` ✓
+5. Return `ScannedFile[]` including `contentHash` ✓
+6. Filter out files with `language: "unknown"` from analysis (still record in file list but don't pass to analyzers) ✓
+7. Post-glob filter via `ignore` package reading `.gitignore` + `.debobignore` from repoRoot ✓
+8. Size cap: skip files where `stats.size > MAX_FILE_BYTES` (1 MB) before `readFileSync` ✓
+9. Extension allowlist: skip files whose `ext` is not in `TEXT_EXTENSIONS` set ✓
 
 **Relevant Context:**
 - `ScannedFile.contentHash` is the SHA-256 of the file's raw UTF-8 content — must be identical on re-scan if file unchanged
 - The scanner does not check `file_cache` — the engine decides whether to re-analyze based on hash comparison
 - `repoRoot` is passed from the CLI, defaults to `process.cwd()`
+- `ScanOptions.respectGitignore` defaults to `true`; set to `false` in tests scanning temp dirs without a `.gitignore`
+- `ScanOptions.extraIgnore` accepts additional glob patterns on top of `DEFAULT_IGNORE`
+- Guard order in the loop: gitignore filter → extension allowlist → `statSync` → size cap → `readFileSync`
+- `ignore` package is pinned at `^5.3.2` in `dependencies`
 
 ---
 
