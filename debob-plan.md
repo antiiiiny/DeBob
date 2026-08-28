@@ -540,7 +540,7 @@ Wire all subsystems together for `debob init`. Manages the pipeline: scan → an
 
 ### Sub-Task 9 — CLI Entry Point
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 Implement `bin/debob.ts` using `commander`. This is the user-facing surface. Drives `runInit`, renders the summary, and wires `--semantic` to pass an `LLMAdapter` to the engine.
@@ -572,7 +572,7 @@ Implement `bin/debob.ts` using `commander`. This is the user-facing surface. Dri
 
 ### Sub-Task 10 — LLM Adapter Interface + watsonx Implementation
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 Implement the full LLM layer: the `LLMAdapter` interface, the `context.ts` context builder (graph → targeted prompt), and the IBM watsonx provider. This is what `--semantic` mode calls. The LLM never receives raw source files — only structured context slices assembled by the query layer.

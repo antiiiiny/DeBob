@@ -57,9 +57,9 @@ The LLM **never receives the full repository**. The graph + query layer assemble
 | 6 | Git Metadata Extractor | ✅ done |
 | 7 | Graph Builder | ✅ done |
 | 8 | Core Engine Orchestrator | ✅ done |
-| 9 | CLI Entry Point | ⬜ pending — **NEXT** |
-| 10 | LLM Adapter + watsonx + Context Builder | ⬜ pending |
-| 11 | Architecture Documentation | ⬜ pending |
+| 9 | CLI Entry Point | ✅ done |
+| 10 | LLM Adapter + watsonx + Context Builder | ✅ done |
+| 11 | Architecture Documentation | ⬜ pending — **NEXT** |
 
 ---
 
@@ -80,7 +80,9 @@ scanner-hardening-plan.md           ← completed plan: gitignore respect + bina
 PROGRESS.md                         ← this file
 
 bin/
-  debob.ts                          ← CLI scaffold placeholder (full impl: Sub-Task 9)
+  debob.ts                          ← Full CLI: commander + chalk + ora, init/review commands,
+                                       --repo/--max-commits/--semantic/--verbose options,
+                                       rich summary output, error handling, exit codes
 
 src/
   types/
@@ -121,9 +123,15 @@ src/
                                        MAX_FILE_BYTES (1 MB) cap, .gitignore/.debobignore filter
 
   llm/
-    adapter.ts                      ← LLMAdapter interface, LLMConfig, ModuleContext,
-                                       DiffContext, QueryContext (interfaces only — impl: Sub-Task 10)
-    providers/                      ← (empty — watsonx impl: Sub-Task 10)
+    adapter.ts                      ← LLMAdapter interface + full JSDoc (ModuleContext, DiffContext,
+                                       QueryContext, LLMConfig)
+    index.ts                        ← createLLMAdapter(provider, config): LLMAdapter factory
+                                       wires "watsonx" → WatsonxAdapter; exports WatsonxAdapter
+    context.ts                      ← buildModuleContext(node, graph, gitStats?): ModuleContext
+                                       assembles graph-derived context slice for the LLM
+    providers/
+      watsonx.ts                    ← WatsonxAdapter: summarizeModule, classifyLayer (REST),
+                                       explainDiff/answerQuestion stubs; prompt builders (no raw source)
 
   engine/
     index.ts                        ← runInit(repoRoot, options): Promise<InitResult>
@@ -131,9 +139,8 @@ src/
                                        pipeline: scan → analyze → git → buildGraph → persist → semantic? → manifest
 
   query/
-    index.ts                        ← buildModuleContext(node, graph): ModuleContext (V1 stub)
-                                       getNodeEdges, getFileImports, getFileExports helpers
-                                       full query layer impl: Sub-Task 10
+    index.ts                        ← getNodeEdges, getFileImports, getFileExports, getNodeNeighbours
+                                       buildModuleContext re-exported here for engine compatibility
 
 docs/                               ← (empty — Sub-Task 11)
 ```
@@ -188,12 +195,12 @@ adapter.close() // saves to disk
 
 ---
 
-## Sub-Task 9 Preview — CLI Entry Point (NEXT)
+## Sub-Task 11 Preview — Architecture Documentation (NEXT)
 
-File: `bin/debob.ts`
+Files: `docs/architecture.md` (new), `README.md` (update)
 
-Wires `commander` → `runInit` → human-readable output via `chalk` + `ora`.
-Uses `WATSONX_*` env vars when `--semantic` is passed.
+Write the canonical reference document covering all components, the graph model, DB schema,
+incremental update design, LLM architecture, and extension guides.
 
 ---
 

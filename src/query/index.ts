@@ -12,6 +12,41 @@ export function getNodeEdges(graph: Graph, nodeId: string): Graph['edges'] {
 }
 
 /**
+ * Return all nodes reachable from `nodeId` within `depth` hops (breadth-first).
+ * Traverses both directions (source → target and target → source).
+ * depth=1 returns immediate neighbours; depth=0 returns an empty array.
+ */
+export function getNodeNeighbours(graph: Graph, nodeId: string, depth: number): Node[] {
+  if (depth <= 0) return []
+  const visited = new Set<string>([nodeId])
+  const queue: Array<{ id: string; remaining: number }> = [{ id: nodeId, remaining: depth }]
+  const results: Node[] = []
+
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    if (current.remaining === 0) continue
+
+    for (const edge of graph.edges) {
+      const neighbourId =
+        edge.source === current.id ? edge.target :
+        edge.target === current.id ? edge.source :
+        null
+
+      if (neighbourId === null || visited.has(neighbourId)) continue
+      visited.add(neighbourId)
+
+      const node = graph.nodes.get(neighbourId)
+      if (node) {
+        results.push(node)
+        queue.push({ id: neighbourId, remaining: current.remaining - 1 })
+      }
+    }
+  }
+
+  return results
+}
+
+/**
  * Return the ids of all files this node imports (outgoing `imports` edges).
  */
 export function getFileImports(graph: Graph, filePath: string): string[] {

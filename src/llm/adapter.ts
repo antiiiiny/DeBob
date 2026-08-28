@@ -81,29 +81,52 @@ export interface QueryContext {
 export interface LLMAdapter {
   /**
    * Summarize a module's responsibility from its graph context slice.
-   * Called by: `debob init --semantic` for each file node.
-   * Output stored in: semantic_enrichments table, field = "responsibility".
+   *
+   * Called by: `debob init --semantic` — once per file node in the graph.
+   * Context: a `ModuleContext` assembled from graph edges (imports, exports, declarations).
+   *          The adapter MUST NOT receive or request raw source code.
+   * Output stored in: `semantic_enrichments` table, `field = "responsibility"`.
+   *
+   * @param context Structured module slice assembled by `buildModuleContext`.
+   * @returns A short human-readable description of the module's responsibility.
    */
   summarizeModule(context: ModuleContext): Promise<string>
 
   /**
    * Infer the architectural layer of a file from its imports/exports/declarations.
-   * Called by: `debob init --semantic` for each file node.
-   * Output stored in: semantic_enrichments table, field = "layer".
+   *
+   * Called by: `debob init --semantic` — once per file node in the graph.
+   * Context: same `ModuleContext` shape used by `summarizeModule`.
+   *          Prompt should emphasise import patterns, not source content.
+   * Output stored in: `semantic_enrichments` table, `field = "layer"`.
+   * Expected return values: one of "presentation" | "business" | "data" | "config" | "test" | "infra".
+   *
+   * @param context Structured module slice assembled by `buildModuleContext`.
+   * @returns An architectural layer label string.
    */
   classifyLayer(context: ModuleContext): Promise<string>
 
   /**
    * Explain a diff in the context of the repository graph.
-   * Called by: `debob review` (future command).
+   *
+   * Called by: `debob review` (future command — not yet implemented).
+   * Context: `DiffContext` including the unified diff, affected nodes, and graph neighbourhood.
    * Output: human-readable explanation of risks and affected workflows.
+   *
+   * @param context Diff context including affected graph nodes and neighbourhood.
+   * @returns Human-readable explanation of the diff's impact.
    */
   explainDiff(context: DiffContext): Promise<string>
 
   /**
    * Answer a free-form question using targeted graph context.
-   * Called by: `debob explain` (future command).
-   * Output: human-readable answer grounded in graph evidence.
+   *
+   * Called by: `debob explain` (future command — not yet implemented).
+   * Context: `QueryContext` with the question and relevant nodes/edges from the graph.
+   * Output: human-readable answer grounded in graph evidence, not raw source.
+   *
+   * @param context Query context including the question and relevant graph nodes.
+   * @returns Human-readable answer grounded in graph data.
    */
   answerQuestion(context: QueryContext): Promise<string>
 }
