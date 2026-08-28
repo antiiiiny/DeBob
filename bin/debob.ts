@@ -1,7 +1,32 @@
 import { createRequire } from 'module'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { Command } from 'commander'
+
+// ─── Load .env (if present) ───────────────────────────────────────────────────
+// Node >=20.6 supports --env-file but we target >=18. Parse manually so that
+// `npx debob` picks up credentials without requiring the user to export vars.
+
+try {
+  const envPath = join(process.cwd(), '.env')
+  if (existsSync(envPath)) {
+    const lines = readFileSync(envPath, 'utf8').split('\n')
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+      const eq = trimmed.indexOf('=')
+      if (eq === -1) continue
+      const key = trimmed.slice(0, eq).trim()
+      const val = trimmed.slice(eq + 1).trim().replace(/^['"]|['"]$/g, '')
+      if (key && !(key in process.env)) {
+        process.env[key] = val
+      }
+    }
+  }
+} catch {
+  // silently ignore — .env is optional
+}
 import chalk from 'chalk'
 import ora from 'ora'
 import open from 'open'
@@ -51,17 +76,18 @@ program
       if (semantic) {
         const apiKey = process.env['WATSONX_API_KEY']
         const projectId = process.env['WATSONX_PROJECT_ID']
-        const endpoint = process.env['WATSONX_ENDPOINT']
+        const url = process.env['WATSONX_URL']
+        const modelId = process.env['WATSONX_MODEL_ID']
 
-        if (!apiKey || !projectId || !endpoint) {
+        if (!apiKey || !projectId || !url || !modelId) {
           console.warn(
             chalk.yellow(
-              '⚠  --semantic was set but WATSONX_API_KEY, WATSONX_PROJECT_ID, or WATSONX_ENDPOINT is missing — skipping LLM enrichment.',
+              '⚠  --semantic was set but WATSONX_API_KEY, WATSONX_PROJECT_ID, WATSONX_URL, or WATSONX_MODEL_ID is missing — skipping LLM enrichment.',
             ),
           )
         } else {
           try {
-            llm = createLLMAdapter('watsonx', { provider: 'watsonx', apiKey, projectId, endpoint })
+            llm = createLLMAdapter('watsonx', { provider: 'watsonx', apiKey, projectId, url, modelId })
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err)
             console.warn(chalk.yellow(`⚠  LLM adapter could not be created: ${msg} — skipping LLM enrichment.`))

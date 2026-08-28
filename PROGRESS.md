@@ -34,7 +34,8 @@ The LLM **never receives the full repository**. The graph + query layer assemble
 | Git | `simple-git` |
 | CLI | `commander` |
 | Ignore rules | `ignore@^5.3.2` (gitignore-spec parser — used by scanner) |
-| LLM (V1) | IBM watsonx REST API (provider-agnostic adapter) |
+| LLM (V1) | IBM watsonx.ai SDK `@ibm-cloud/watsonx-ai@^1.7` — chat API via `WatsonxProvider` |
+| Browser open | `open@^10` — auto-opens browser for `debob visualise` |
 
 > **Why WASM?** `better-sqlite3` and native `tree-sitter` both require Visual Studio / node-gyp
 > to build on Windows. The WASM alternatives work without any native compilation.
@@ -72,6 +73,7 @@ The LLM **never receives the full repository**. The graph + query layer assemble
 package.json                        ← debob 0.1.0, ESM, bin: dist/bin/debob.js
                                        web-tree-sitter pinned to EXACT "0.22.6"
                                        ignore@^5.3.2 added for scanner gitignore support
+                                       @ibm-cloud/watsonx-ai@^1.7.16, open@^10.1.0 added
 tsconfig.json                       ← ES2022, moduleResolution: bundler, strict
 tsup.config.ts                      ← entry: bin/debob.ts + src/**, format: esm
 README.md                           ← quick-start, commands, watsonx env vars
@@ -80,9 +82,14 @@ scanner-hardening-plan.md           ← completed plan: gitignore respect + bina
 PROGRESS.md                         ← this file
 
 bin/
-  debob.ts                          ← Full CLI: commander + chalk + ora, init/review commands,
-                                       --repo/--max-commits/--semantic/--verbose options,
-                                       rich summary output, error handling, exit codes
+  debob.ts                          ← Full CLI: commander + chalk + ora
+                                       Auto-loads .env from cwd at startup (zero-dep parser)
+                                       init: --repo/--max-commits/--semantic/--verbose,
+                                         reads WATSONX_API_KEY/PROJECT_ID/URL/MODEL_ID,
+                                         rich summary output, error handling, exit codes
+                                       visualise (alias: viz): --repo/--port, spins up
+                                         local HTTP server, auto-opens browser via open
+                                       review: stub (coming soon)
 
 src/
   types/
@@ -124,14 +131,18 @@ src/
 
   llm/
     adapter.ts                      ← LLMAdapter interface + full JSDoc (ModuleContext, DiffContext,
-                                       QueryContext, LLMConfig)
+                                       QueryContext, LLMConfig — url/modelId fields)
     index.ts                        ← createLLMAdapter(provider, config): LLMAdapter factory
-                                       wires "watsonx" → WatsonxAdapter; exports WatsonxAdapter
+                                       wires "watsonx" → WatsonxProvider
+                                       exports WatsonxProvider + WatsonxAdapter (alias)
     context.ts                      ← buildModuleContext(node, graph, gitStats?): ModuleContext
                                        assembles graph-derived context slice for the LLM
     providers/
-      watsonx.ts                    ← WatsonxAdapter: summarizeModule, classifyLayer (REST),
-                                       explainDiff/answerQuestion stubs; prompt builders (no raw source)
+      watsonx.ts                    ← WatsonxProvider: @ibm-cloud/watsonx-ai SDK + IamAuthenticator
+                                       textChat() chat API (NOT deprecated text/generation REST)
+                                       summarizeModule, classifyLayer, buildModulePrompt
+                                       explainDiff/answerQuestion stubs (debob review/explain)
+                                       reads WATSONX_URL + WATSONX_MODEL_ID (not ENDPOINT)
 
   engine/
     index.ts                        ← runInit(repoRoot, options): Promise<InitResult>
@@ -141,6 +152,12 @@ src/
   query/
     index.ts                        ← getNodeEdges, getFileImports, getFileExports, getNodeNeighbours
                                        buildModuleContext re-exported here for engine compatibility
+
+  visualiser/
+    server.ts                       ← startVisualiserServer(repoRoot, options): local HTTP server
+                                       reads graph via readGraph(), serves GET /api/graph (JSON)
+                                       and GET / (inline Cytoscape.js HTML — no build step)
+                                       port auto-retry (7842–7846), returns { url, close }
 
 docs/
   architecture.md                   ← Full architecture reference: system overview, pipeline,
@@ -203,10 +220,27 @@ adapter.close() // saves to disk
 
 All 11 sub-tasks are implemented and verified. The full DeBob system is operational:
 
-- `npx debob init` — scans any Git repo and builds `.debob/context.db`
-- `npx debob init --semantic` — additionally runs LLM enrichment via `WATSONX_*` env vars
+- `npx debob init` — scans any Git repo, builds `.debob/context.db`, zero LLM calls
+- `npx debob init --semantic` — additionally enriches the graph via watsonx.ai SDK
+  - Reads `WATSONX_API_KEY`, `WATSONX_PROJECT_ID`, `WATSONX_URL`, `WATSONX_MODEL_ID` from `.env`
+  - Uses `@ibm-cloud/watsonx-ai` SDK chat API via `WatsonxProvider`
+  - Writes `responsibility` + `layer` fields to `semantic_enrichments` table per file node
+- `npx debob visualise` — opens interactive graph in browser (Cytoscape.js, local HTTP server)
 - `docs/architecture.md` — canonical reference for contributors and AI agents
 - `README.md` — quick-start, commands, output summary, contributing guide
+
+### watsonx Credentials (required for --semantic)
+
+| Env var | Description |
+|---|---|
+| `WATSONX_API_KEY` | IBM Cloud IAM API key |
+| `WATSONX_PROJECT_ID` | watsonx.ai project id |
+| `WATSONX_URL` | Service URL (e.g. `https://us-south.ml.cloud.ibm.com`) |
+| `WATSONX_MODEL_ID` | Chat-capable model id (e.g. `openai/gpt-oss-120b`, `meta-llama/llama-3-3-70b-instruct`) |
+
+Place these in `.env` at the repo root — the CLI loads it automatically at startup.
+Available chat-capable models on `us-south`: `ibm/granite-4-h-small`, `meta-llama/llama-3-3-70b-instruct`,
+`mistralai/mistral-medium-2505`, `openai/gpt-oss-120b`, and others.
 
 ---
 
@@ -239,4 +273,7 @@ node dist/debob.js     # run compiled output
 - Do NOT send full source files to the LLM — only `ModuleContext` slices from query layer
 - Do NOT add per-module JSON files to `.debob/` — SQLite only in V1
 - Do NOT implement `debob review`, `debob update`, `debob explain` yet — out of scope
-- Do NOT call `adapter.close()` forget — sql.js won't persist without it
+- Do NOT call `adapter.close()` and forget — sql.js won't persist without it
+- Do NOT use the deprecated `text/generation` REST endpoint — use `WatsonxProvider` (SDK chat API)
+- Do NOT read `WATSONX_ENDPOINT` — the correct env var is `WATSONX_URL`
+- Do NOT hardcode model IDs — always pass `WATSONX_MODEL_ID` from env via `LLMConfig.modelId`

@@ -1,6 +1,6 @@
 import type { LLMAdapter } from './adapter.js'
 import type { LLMConfig } from './adapter.js'
-import { WatsonxAdapter } from './providers/watsonx.js'
+import { WatsonxProvider } from './providers/watsonx.js'
 
 // ─── LLM Adapter Factory ──────────────────────────────────────────────────────
 
@@ -8,7 +8,7 @@ import { WatsonxAdapter } from './providers/watsonx.js'
  * Create an LLMAdapter for the given provider.
  *
  * V1 supported providers:
- *  - `"watsonx"` → `WatsonxAdapter` (IBM watsonx REST API)
+ *  - `"watsonx"` → `WatsonxProvider` (IBM watsonx.ai SDK, chat API)
  *
  * Future providers are added by importing their class and extending the switch.
  *
@@ -17,7 +17,7 @@ import { WatsonxAdapter } from './providers/watsonx.js'
 export function createLLMAdapter(provider: string, config: LLMConfig): LLMAdapter {
   switch (provider) {
     case 'watsonx':
-      return new WatsonxAdapter(config)
+      return new WatsonxProvider(config)
     default:
       throw new Error(
         `createLLMAdapter: unknown provider "${provider}". Supported: "watsonx"`,
@@ -26,4 +26,6 @@ export function createLLMAdapter(provider: string, config: LLMConfig): LLMAdapte
 }
 
 export type { LLMAdapter, LLMConfig }
-export { WatsonxAdapter }
+export { WatsonxProvider }
+// Backward-compat alias
+export { WatsonxProvider as WatsonxAdapter }

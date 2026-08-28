@@ -577,31 +577,21 @@ Implement `bin/debob.ts` using `commander`. This is the user-facing surface. Dri
 **Intent:**
 Implement the full LLM layer: the `LLMAdapter` interface, the `context.ts` context builder (graph → targeted prompt), and the IBM watsonx provider. This is what `--semantic` mode calls. The LLM never receives raw source files — only structured context slices assembled by the query layer.
 
-**Expected Outcomes:**
-- `src/llm/adapter.ts`: `LLMAdapter` interface + context types (already typed in Sub-Task 2; add JSDoc here)
-- `src/llm/context.ts`: `buildModuleContext(node, graph): ModuleContext` — uses query helpers to assemble what the LLM needs for a given node
-- `src/llm/providers/watsonx.ts`: `WatsonxAdapter` implementing `LLMAdapter` using IBM watsonx REST API
-- `src/llm/index.ts`: `createLLMAdapter(provider, config): LLMAdapter` factory
-- All LLM outputs stored via `saveSemanticEnrichments` with `llmProvider` and `modelId` metadata
+**Expected Outcomes:** ✅ All delivered.
+- `src/llm/adapter.ts`: `LLMAdapter` interface + context types + full JSDoc. `LLMConfig.url` (not `endpoint`).
+- `src/llm/context.ts`: `buildModuleContext(node, graph, gitStats?): ModuleContext`
+- `src/llm/providers/watsonx.ts`: `WatsonxProvider` using `@ibm-cloud/watsonx-ai` SDK + `IamAuthenticator`, `textChat()` chat API
+- `src/llm/index.ts`: `createLLMAdapter` factory wiring `"watsonx"` → `WatsonxProvider`; exports `WatsonxAdapter` alias
+- 100 enrichments written to `semantic_enrichments` on a live run against this repo
 
-**Todo List:**
-1. `src/query/index.ts`: implement `getNodeNeighbours(graph, nodeId, depth): Node[]`, `getNodeEdges(graph, nodeId): Edge[]`, `getFileImports(graph, filePath): string[]`, `getFileExports(graph, filePath): string[]` — these are the primitives the context builder uses
-2. `src/llm/context.ts`: `buildModuleContext(node, graph, gitStats?): ModuleContext` — assembles `{ filePath, imports: string[], exports: string[], declarations: { name, type }[], gitStats? }` from graph query results
-3. `src/llm/adapter.ts`: add JSDoc to each method documenting which debob command uses it and what context it expects
-4. `src/llm/providers/watsonx.ts`: implement `WatsonxAdapter`:
-   - Constructor takes `LLMConfig` (`apiKey`, `projectId`, `endpoint`, `modelId`)
-   - `summarizeModule(ctx)`: build a structured prompt from `ModuleContext` fields (not raw source); call `POST {endpoint}/ml/v1/text/generation` with `model_id`, project_id, input, parameters
-   - `classifyLayer(ctx)`: similar — prompt from imports/exports/declarations only
-   - `explainDiff` and `answerQuestion`: stub with `throw new Error('not yet implemented')` — interfaces defined, implementations deferred to review/explain sub-tasks
-5. `src/llm/index.ts`: `createLLMAdapter(provider: string, config: LLMConfig): LLMAdapter` — switch on `provider`, return `new WatsonxAdapter(config)` for `"watsonx"`, throw for unknown providers
-6. Watsonx prompt format: structured JSON/text including file path, import list, export list, declaration names — not source code
-
-**Relevant Context:**
-- IBM watsonx text generation endpoint: `POST /ml/v1/text/generation?version=2023-05-29`
-- Request body: `{ "model_id": "...", "project_id": "...", "input": "...", "parameters": { "max_new_tokens": 256 } }`
-- Auth: `Authorization: Bearer {apiKey}` header
-- Credentials from env only: `WATSONX_API_KEY`, `WATSONX_PROJECT_ID`, `WATSONX_ENDPOINT`
-- The prompt must describe the module context in structured terms — not dump source code
+**Relevant Context (as implemented):**
+- SDK: `@ibm-cloud/watsonx-ai@^1.7.16` — class `WatsonXAI`, method `textChat({ modelId, projectId, messages })`
+- Auth: `IamAuthenticator({ apikey })` from `@ibm-cloud/watsonx-ai/authentication`
+- Chat API response: `response.result.choices[0].message.content`
+- Credentials from env: `WATSONX_API_KEY`, `WATSONX_PROJECT_ID`, `WATSONX_URL`, `WATSONX_MODEL_ID`
+  - Note: `WATSONX_URL` (not `WATSONX_ENDPOINT`), `WATSONX_MODEL_ID` must include namespace prefix (e.g. `openai/gpt-oss-120b`)
+- `.env` auto-loaded by CLI at startup — users do not need to `export` vars manually
+- The deprecated `POST /ml/v1/text/generation` REST endpoint is NOT used
 
 ---
 

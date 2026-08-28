@@ -10,8 +10,8 @@ export interface LLMConfig {
   apiKey?: string
   /** Provider-specific model id (e.g. "ibm/granite-13b-instruct-v2"). */
   modelId?: string
-  /** API endpoint URL (e.g. "https://us-south.ml.cloud.ibm.com"). */
-  endpoint?: string
+  /** Service URL (e.g. "https://us-south.ml.cloud.ibm.com"). Maps to WATSONX_URL env var. */
+  url?: string
   /** Provider-specific project or workspace id. */
   projectId?: string
 }

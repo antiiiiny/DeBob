@@ -13,6 +13,7 @@
     "start": "node dist/bin/debob.js"
   },
   "dependencies": {
+    "@ibm-cloud/watsonx-ai": "^1.7.16",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
     "glob": "^10.4.5",
