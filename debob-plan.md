@@ -607,7 +607,7 @@ Implement the full LLM layer: the `LLMAdapter` interface, the `context.ts` conte
 
 ### Sub-Task 11 — Architecture Documentation
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 Write `docs/architecture.md` and finalize `README.md`. This document is the primary reference for future contributors and AI agents working on DeBob.

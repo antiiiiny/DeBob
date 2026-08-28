@@ -59,7 +59,7 @@ The LLM **never receives the full repository**. The graph + query layer assemble
 | 8 | Core Engine Orchestrator | ✅ done |
 | 9 | CLI Entry Point | ✅ done |
 | 10 | LLM Adapter + watsonx + Context Builder | ✅ done |
-| 11 | Architecture Documentation | ⬜ pending — **NEXT** |
+| 11 | Architecture Documentation | ✅ done |
 
 ---
 
@@ -142,7 +142,11 @@ src/
     index.ts                        ← getNodeEdges, getFileImports, getFileExports, getNodeNeighbours
                                        buildModuleContext re-exported here for engine compatibility
 
-docs/                               ← (empty — Sub-Task 11)
+docs/
+  architecture.md                   ← Full architecture reference: system overview, pipeline,
+                                       graph model, DB schema (all 6 tables), incremental update
+                                       design, LLM architecture, extension guides (language + LLM
+                                       provider), debob review foundation
 ```
 
 ---
@@ -195,12 +199,14 @@ adapter.close() // saves to disk
 
 ---
 
-## Sub-Task 11 Preview — Architecture Documentation (NEXT)
+## All Sub-Tasks Complete ✅
 
-Files: `docs/architecture.md` (new), `README.md` (update)
+All 11 sub-tasks are implemented and verified. The full DeBob system is operational:
 
-Write the canonical reference document covering all components, the graph model, DB schema,
-incremental update design, LLM architecture, and extension guides.
+- `npx debob init` — scans any Git repo and builds `.debob/context.db`
+- `npx debob init --semantic` — additionally runs LLM enrichment via `WATSONX_*` env vars
+- `docs/architecture.md` — canonical reference for contributors and AI agents
+- `README.md` — quick-start, commands, output summary, contributing guide
 
 ---
 
