@@ -55,9 +55,9 @@ The LLM **never receives the full repository**. The graph + query layer assemble
 | 4 | Repository Scanner | ✅ done (+ hardening: gitignore, size cap, extension allowlist) |
 | 5 | TypeScript/JS Static Analyzer | ✅ done |
 | 6 | Git Metadata Extractor | ✅ done |
-| 7 | Graph Builder | ⬜ pending — **NEXT** |
-| 8 | Core Engine Orchestrator | ⬜ pending |
-| 9 | CLI Entry Point | ⬜ pending |
+| 7 | Graph Builder | ✅ done |
+| 8 | Core Engine Orchestrator | ✅ done |
+| 9 | CLI Entry Point | ⬜ pending — **NEXT** |
 | 10 | LLM Adapter + watsonx + Context Builder | ⬜ pending |
 | 11 | Architecture Documentation | ⬜ pending |
 
@@ -89,6 +89,10 @@ src/
   graph/
     types.ts                        ← NodeType, EdgeType, DataSource, ArchitecturalLayer,
                                        Node, Edge, Graph
+    builder.ts                      ← buildGraph(files, analysisResults, gitMetadata): Graph
+                                       merges scanner + analyzer + git → unified deduplicated Graph
+                                       attaches churnScore/authorCount/contentHash to file nodes
+                                       marks top-10% churn file nodes hot, stubs missing edge endpoints
 
   analyzers/
     interface.ts                    ← LanguageAnalyzer, AnalysisResult plugin interface
@@ -121,8 +125,15 @@ src/
                                        DiffContext, QueryContext (interfaces only — impl: Sub-Task 10)
     providers/                      ← (empty — watsonx impl: Sub-Task 10)
 
-  engine/                           ← (empty — Sub-Task 8)
-  query/                            ← (empty — Sub-Task 10)
+  engine/
+    index.ts                        ← runInit(repoRoot, options): Promise<InitResult>
+                                       InitOptions, InitResult types; analyzer registry (ext→analyzer Map)
+                                       pipeline: scan → analyze → git → buildGraph → persist → semantic? → manifest
+
+  query/
+    index.ts                        ← buildModuleContext(node, graph): ModuleContext (V1 stub)
+                                       getNodeEdges, getFileImports, getFileExports helpers
+                                       full query layer impl: Sub-Task 10
 
 docs/                               ← (empty — Sub-Task 11)
 ```
@@ -177,46 +188,12 @@ adapter.close() // saves to disk
 
 ---
 
-## Sub-Task 7 — Graph Builder (NEXT)
+## Sub-Task 9 Preview — CLI Entry Point (NEXT)
 
-File: `src/graph/builder.ts`
+File: `bin/debob.ts`
 
-**What it does:**
-Takes the outputs of Sub-Tasks 4, 5, 6 and combines them into a single unified `Graph`.
-
-**Inputs:**
-- `ScannedFile[]` from `scanRepository()`
-- `AnalysisResult[]` from `TypeScriptAnalyzer.analyze()` (one per file)
-- `GitMetadata` from `extractGitMetadata()`
-
-**Output:** `Graph { nodes: Map<string, Node>, edges: Edge[] }`
-
-**Steps:**
-1. Init `nodes = new Map<string, Node>()`, `edges = new Map<string, Edge>()`
-2. For each `ScannedFile` → create a `file` node (id = relativePath)
-3. Merge all `AnalysisResult` nodes — symbol nodes win over bare file nodes if same id
-4. Merge all `AnalysisResult` edges — deduplicate by edge id
-5. For each file node → look up `GitFileStats` → attach `churnScore`, `lastModifiedAt`, `authorCount`, `contentHash` to `node.metadata`
-6. Compute top-10% churn threshold → mark those file nodes `metadata.hot = true`
-7. For any edge target that doesn't exist as a node → create a stub node
-   - Internal missing files: `type: "file"`, `dataSource: "static"`
-   - External packages: already created by analyzer as `type: "package"`, `id: "pkg::name"`
-8. Return `Graph`
-
-**Export:** `export function buildGraph(files, analysisResults, gitMetadata): Graph`
-
----
-
-## Sub-Task 8 Preview — Core Engine Orchestrator
-
-File: `src/engine/index.ts`
-
-Wires: scan → analyze → git → buildGraph → persist → (optional LLM semantic)
-Export: `runInit(repoRoot, options): Promise<InitResult>`
-Options: `{ maxCommits?, verbose?, semantic?, llm?: LLMAdapter }`
-
-Key: saves `file_cache` entries per file (contentHash + analyzerVersion + schemaVersion + lastGitCommit).
-Key: LLM enrichment only called if `options.semantic && options.llm` — never by default.
+Wires `commander` → `runInit` → human-readable output via `chalk` + `ora`.
+Uses `WATSONX_*` env vars when `--semantic` is passed.
 
 ---
 

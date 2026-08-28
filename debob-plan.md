@@ -476,7 +476,7 @@ Extract Git metadata: recent commits (up to configurable limit), per-file change
 
 ### Sub-Task 7 — Graph Builder
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 Combine scanner output, all analyzer results, and Git metadata into a single deduplicated, consistent `Graph`. Merge Git signals into file nodes as metadata. Identify hot files.
@@ -508,7 +508,7 @@ Combine scanner output, all analyzer results, and Git metadata into a single ded
 
 ### Sub-Task 8 — Core Engine Orchestrator
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 Wire all subsystems together for `debob init`. Manages the pipeline: scan → analyze → git → build graph → persist → (optional) semantic enrichment. Returns a structured `InitResult` for the CLI to render.
