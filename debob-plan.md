@@ -267,7 +267,7 @@ New languages (Python, Rust, etc.) are added by writing a new class that impleme
 
 ### Sub-Task 1 — Project Scaffold
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 Establish the TypeScript project with all dependencies, build configuration, and directory structure. Every other sub-task depends on this.
@@ -298,7 +298,7 @@ Establish the TypeScript project with all dependencies, build configuration, and
 
 ### Sub-Task 2 — Shared Types
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 Define all shared TypeScript types. Types are established before implementation so all sub-tasks compile against a consistent contract.
@@ -332,7 +332,7 @@ Define all shared TypeScript types. Types are established before implementation 
 
 ### Sub-Task 3 — SQLite Persistence Layer
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 Implement `SqlitePersistenceAdapter` behind the `PersistenceAdapter` interface. This is the canonical V1 storage backend. The interface abstraction means tests and future backends never touch SQLite directly.
