@@ -20,7 +20,7 @@
     "simple-git": "^3.27.0",
     "sql.js": "^1.14.2",
     "tree-sitter-wasms": "^0.1.13",
-    "web-tree-sitter": "^0.26.4"
+    "web-tree-sitter": "^0.22.6"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

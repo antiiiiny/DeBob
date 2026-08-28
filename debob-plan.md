@@ -371,7 +371,7 @@ Implement `SqlitePersistenceAdapter` behind the `PersistenceAdapter` interface. 
 
 ### Sub-Task 4 — Repository Scanner
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 Implement the file system scanner that discovers all relevant source files and computes their content hashes. The hash is stored in `file_cache` and is the primary mechanism for detecting what changed on future runs.
@@ -399,7 +399,7 @@ Implement the file system scanner that discovers all relevant source files and c
 
 ### Sub-Task 5 — TypeScript/JavaScript Static Analyzer
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 Implement `TypeScriptAnalyzer`, the V1 `LanguageAnalyzer` plugin, using tree-sitter. Extracts nodes and edges deterministically from TS/JS source. Covers the confirmed V1 scope: imports, exports, functions, classes, interfaces, extends, implements.
@@ -434,7 +434,7 @@ Implement `TypeScriptAnalyzer`, the V1 `LanguageAnalyzer` plugin, using tree-sit
 
 ### Sub-Task 6 — Git Metadata Extractor
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 Extract Git metadata: recent commits (up to configurable limit), per-file change frequency (churn), author counts, and last-modified timestamps. Author emails are SHA-256 hashed before storage.

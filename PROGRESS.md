@@ -30,13 +30,17 @@ The LLM **never receives the full repository**. The graph + query layer assemble
 | Build | `tsup` → `dist/` |
 | Dev runner | `tsx` |
 | SQLite | `sql.js` (WASM — no native build needed) |
-| AST parsing | `web-tree-sitter` + `tree-sitter-wasms` (WASM grammars) |
+| AST parsing | `web-tree-sitter@0.22.6` + `tree-sitter-wasms@0.1.13` (WASM) |
 | Git | `simple-git` |
 | CLI | `commander` |
 | LLM (V1) | IBM watsonx REST API (provider-agnostic adapter) |
 
 > **Why WASM?** `better-sqlite3` and native `tree-sitter` both require Visual Studio / node-gyp
 > to build on Windows. The WASM alternatives work without any native compilation.
+>
+> **Version pin**: `web-tree-sitter` is pinned to `0.22.6` (NOT `^0.26.x`).
+> `tree-sitter-wasms@0.1.13` was built with tree-sitter-cli@0.20.x (ABI 14).
+> `web-tree-sitter@0.26.x` uses ABI 15 — incompatible. Always keep `"web-tree-sitter": "0.22.6"` exact in package.json.
 
 ---
 
@@ -47,10 +51,10 @@ The LLM **never receives the full repository**. The graph + query layer assemble
 | 1 | Project Scaffold | ✅ done |
 | 2 | Shared Types | ✅ done |
 | 3 | SQLite Persistence Layer | ✅ done |
-| 4 | Repository Scanner | 🔄 in progress (file written, typecheck ran but was cancelled) |
-| 5 | TypeScript/JS Static Analyzer | ⬜ pending |
-| 6 | Git Metadata Extractor | ⬜ pending |
-| 7 | Graph Builder | ⬜ pending |
+| 4 | Repository Scanner | ✅ done |
+| 5 | TypeScript/JS Static Analyzer | ✅ done |
+| 6 | Git Metadata Extractor | ✅ done |
+| 7 | Graph Builder | ⬜ pending — **NEXT** |
 | 8 | Core Engine Orchestrator | ⬜ pending |
 | 9 | CLI Entry Point | ⬜ pending |
 | 10 | LLM Adapter + watsonx + Context Builder | ⬜ pending |
@@ -58,51 +62,60 @@ The LLM **never receives the full repository**. The graph + query layer assemble
 
 ---
 
-## Files Created So Far
+## Complete File Inventory
 
 ```
-.gitignore                          ← excludes dist/, node_modules/, .debob/, .env, etc.
-.bobignore                          ← Bob AI ignore file (pre-existing)
+.gitignore                          ← dist/, node_modules/, .debob/, .env, bob_sessions/,
+                                       _test_*.mjs, _test_*.ts, _scratch_*.mjs
+.bobignore
 package.json                        ← debob 0.1.0, ESM, bin: dist/bin/debob.js
+                                       web-tree-sitter pinned to EXACT "0.22.6"
 tsconfig.json                       ← ES2022, moduleResolution: bundler, strict
-tsup.config.ts                      ← builds bin/debob.ts + src/**
-README.md                           ← quick-start docs
-debob-plan.md                       ← full architecture plan with sub-task specs
+tsup.config.ts                      ← entry: bin/debob.ts + src/**, format: esm
+README.md                           ← quick-start, commands, watsonx env vars
+debob-plan.md                       ← full architecture plan + all sub-task specs
 PROGRESS.md                         ← this file
 
 bin/
-  debob.ts                          ← CLI scaffold (placeholder — full impl in Sub-Task 9)
+  debob.ts                          ← CLI scaffold placeholder (full impl: Sub-Task 9)
 
 src/
   types/
-    index.ts                        ← central re-export of all shared types
+    index.ts                        ← central re-export barrel for all shared types
 
   graph/
-    types.ts                        ← NodeType, EdgeType, DataSource, Node, Edge, Graph
+    types.ts                        ← NodeType, EdgeType, DataSource, ArchitecturalLayer,
+                                       Node, Edge, Graph
 
   analyzers/
     interface.ts                    ← LanguageAnalyzer, AnalysisResult plugin interface
-    typescript/                     ← (empty — implementation in Sub-Task 5)
+    typescript/
+      index.ts                      ← TypeScriptAnalyzer (web-tree-sitter WASM)
+                                       IMPORTANT: uses 'import_statement' node type
+                                       (NOT 'import_declaration' — tree-sitter grammar quirk)
+
+  git/
+    index.ts                        ← extractGitMetadata(), GitCommit, GitFileStats, GitMetadata
+                                       SHA-256 hashes author emails; returns gracefully if not a repo
 
   persistence/
-    interface.ts                    ← PersistenceAdapter, FileCacheEntry, SemanticEnrichment,
-                                       GitCommit, GitFileStats, GitMetadata
-    schema.ts                       ← SCHEMA_VERSION=1, all CREATE TABLE DDL + indexes
+    interface.ts                    ← PersistenceAdapter interface, FileCacheEntry,
+                                       SemanticEnrichment, GitCommit, GitFileStats, GitMetadata
+    schema.ts                       ← SCHEMA_VERSION=1, CREATE TABLE DDL for 6 tables + indexes
     sqlite.ts                       ← SqlitePersistenceAdapter, openDb, saveDb,
                                        writeManifest, readManifest
-    index.ts                        ← re-exports
+    index.ts                        ← re-exports SCHEMA_VERSION, PersistenceAdapter,
+                                       SqlitePersistenceAdapter, openDb, writeManifest, readManifest
 
   scanner/
-    types.ts                        ← ScannedFile type
-    index.ts                        ← scanRepository(), summarizeByLanguage()
-                                       (WRITTEN — needs typecheck verification)
+    types.ts                        ← ScannedFile interface
+    index.ts                        ← scanRepository(), summarizeByLanguage(), ScanOptions
 
   llm/
-    adapter.ts                      ← LLMAdapter, LLMConfig, ModuleContext, DiffContext,
-                                       QueryContext interfaces (Sub-Task 10 implements)
-    providers/                      ← (empty — watsonx impl in Sub-Task 10)
+    adapter.ts                      ← LLMAdapter interface, LLMConfig, ModuleContext,
+                                       DiffContext, QueryContext (interfaces only — impl: Sub-Task 10)
+    providers/                      ← (empty — watsonx impl: Sub-Task 10)
 
-  git/                              ← (empty — Sub-Task 6)
   engine/                           ← (empty — Sub-Task 8)
   query/                            ← (empty — Sub-Task 10)
 
@@ -111,97 +124,94 @@ docs/                               ← (empty — Sub-Task 11)
 
 ---
 
-## Key Design Decisions (locked)
+## Key Implementation Notes
 
-1. **Persistence**: `sql.js` WASM SQLite. `SqlitePersistenceAdapter` implements `PersistenceAdapter`
-   interface. Engine never imports sql.js directly — always goes through the interface.
+### WASM ABI Compatibility (CRITICAL)
+- `web-tree-sitter` MUST stay at `"0.22.6"` (exact, no caret)
+- `tree-sitter-wasms@0.1.13` was built with ABI 14; `web-tree-sitter@0.26.x` uses ABI 15
+- WASM file names in 0.22.x: `tree-sitter.wasm` (NOT `web-tree-sitter.wasm`)
+- Grammar WASM files: `node_modules/tree-sitter-wasms/out/tree-sitter-typescript.wasm` + `tree-sitter-tsx.wasm`
+- `Parser.Language.load(path)` — Language is a nested namespace under Parser (not a separate export)
 
-2. **Incremental updates**: `file_cache` table stores `contentHash + analyzerVersion + schemaVersion +
-   lastGitCommit` per file. Future `debob update` skips files where none of these changed.
+### tree-sitter Grammar Node Names (CRITICAL)
+- Import statements: **`import_statement`** (NOT `import_declaration`)
+- Export statements: `export_statement` (correct)
+- Class: `class_declaration`, `class_heritage`, `extends_clause`, `implements_clause`
+- Interface: `interface_declaration`, `extends_type_clause`
+- Function: `function_declaration`
 
-3. **LLM architecture**: `debob init` is deterministic by default. `debob init --semantic` runs LLM
-   enrichment AFTER the graph is built, using targeted `ModuleContext` slices from the query layer.
-   LLM outputs go into the `semantic_enrichments` table, tagged with `llmProvider` + `modelId`.
+### sql.js Persistence Pattern
+- `sql.js` is in-memory; changes are NOT auto-saved to disk
+- Always call `adapter.close()` (or `saveDb(db, dbPath)`) after mutations
+- `openDb(repoRoot)` loads existing db from file if present, creates new if not
+- `SqlitePersistenceAdapter` saves to disk on `close()`
 
-4. **Author privacy**: Git author emails are SHA-256 hashed before storage. Raw emails never written.
+### Graph Node/Edge ID Conventions
+- File node id: `relativePath` (e.g. `src/services/auth.ts`)
+- Symbol node id: `"relativePath::SymbolName"` (e.g. `src/services/auth.ts::AuthService`)
+- Package node id: `"pkg::packageName"` (e.g. `pkg::express`)
+- Edge id: `"${sourceId}::${edgeType}::${targetId}"` — deterministic, dedup-safe
 
-5. **Analyzer plugins**: `LanguageAnalyzer` interface with `language`, `extensions`, `version`,
-   `analyze(filePath, source)`. V1 supports TypeScript/JavaScript only. Add Python etc. by
-   implementing the interface and registering extensions — no other changes needed.
-
-6. **Node IDs**: stable across runs. File nodes: `relativePath`. Symbol nodes: `"relativePath::SymbolName"`.
-   External packages: `"pkg::packageName"`.
-
-7. **Edge IDs**: `"${source}::${edgeType}::${target}"` — deterministic, deduplication-safe.
-
-8. **`dataSource` field**: every Node and Edge carries `dataSource: "static" | "git" | "llm"` so
-   the origin of every piece of data is always traceable. Never use `source` (collides with JS built-ins).
-
----
-
-## Next Step: Complete Sub-Task 4 (Repository Scanner)
-
-The file `src/scanner/index.ts` was written but typecheck was interrupted.
-
-**Resume by:**
-1. Running `npm run typecheck` — should pass cleanly
-2. Running a quick smoke test against this repo itself:
-   ```bash
-   npx tsx -e "
-     import { scanRepository, summarizeByLanguage } from './src/scanner/index.js'
-     const files = await scanRepository('.')
-     console.log(summarizeByLanguage(files))
-   "
-   ```
-3. Marking Sub-Task 4 done in this file and in `debob-plan.md`
-4. Proceeding to Sub-Task 5 (TypeScript/JS Static Analyzer)
-
----
-
-## Sub-Task 5 Preview — TypeScript/JS Static Analyzer
-
-File: `src/analyzers/typescript/index.ts`
-
-Uses `web-tree-sitter` (already installed). Key steps:
-- Initialize Parser with WASM from `node_modules/web-tree-sitter/web-tree-sitter.wasm`
-- Load TypeScript grammar from `node_modules/tree-sitter-wasms/out/tree-sitter-typescript.wasm`
-- Load TSX grammar from `node_modules/tree-sitter-wasms/out/tree-sitter-tsx.wasm`
-- Walk AST for: `import_declaration`, `export_*`, `function_declaration`, `class_declaration`,
-  `interface_declaration`, `extends_clause`, `implements_clause`
-- Assign `layer` hints from path patterns
-- The `analyze()` method is synchronous once the parser is initialized
-- Initialization is async — use a static `TypeScriptAnalyzer.create()` factory
-
-WASM file paths (confirmed present):
-```
-node_modules/web-tree-sitter/web-tree-sitter.wasm
-node_modules/tree-sitter-wasms/out/tree-sitter-typescript.wasm
-node_modules/tree-sitter-wasms/out/tree-sitter-tsx.wasm
+### PersistenceAdapter API
+The engine NEVER imports `sql.js` directly. Always use `PersistenceAdapter`:
+```ts
+const { db, dbPath } = await openDb(repoRoot)
+const adapter = new SqlitePersistenceAdapter(db, dbPath)
+// ... mutations ...
+adapter.close() // saves to disk
 ```
 
 ---
 
-## Sub-Task 6 Preview — Git Metadata Extractor
+## Sub-Task 7 — Graph Builder (NEXT)
 
-File: `src/git/index.ts`
+File: `src/graph/builder.ts`
 
-Uses `simple-git` (already installed). Key steps:
-- `simpleGit(repoRoot).checkIsRepo()` — return empty result if not a repo
-- Fetch last N commits with `--name-only` to get changed files per commit
-- Hash author email with `crypto.createHash('sha256').update(email).digest('hex')`
-- Aggregate per-file: commitCount, unique hashed-email set (→ authorCount), latest date
-- churnScore = commitCount
-- Return `GitMetadata { commits, fileStats, headCommit }`
+**What it does:**
+Takes the outputs of Sub-Tasks 4, 5, 6 and combines them into a single unified `Graph`.
+
+**Inputs:**
+- `ScannedFile[]` from `scanRepository()`
+- `AnalysisResult[]` from `TypeScriptAnalyzer.analyze()` (one per file)
+- `GitMetadata` from `extractGitMetadata()`
+
+**Output:** `Graph { nodes: Map<string, Node>, edges: Edge[] }`
+
+**Steps:**
+1. Init `nodes = new Map<string, Node>()`, `edges = new Map<string, Edge>()`
+2. For each `ScannedFile` → create a `file` node (id = relativePath)
+3. Merge all `AnalysisResult` nodes — symbol nodes win over bare file nodes if same id
+4. Merge all `AnalysisResult` edges — deduplicate by edge id
+5. For each file node → look up `GitFileStats` → attach `churnScore`, `lastModifiedAt`, `authorCount`, `contentHash` to `node.metadata`
+6. Compute top-10% churn threshold → mark those file nodes `metadata.hot = true`
+7. For any edge target that doesn't exist as a node → create a stub node
+   - Internal missing files: `type: "file"`, `dataSource: "static"`
+   - External packages: already created by analyzer as `type: "package"`, `id: "pkg::name"`
+8. Return `Graph`
+
+**Export:** `export function buildGraph(files, analysisResults, gitMetadata): Graph`
+
+---
+
+## Sub-Task 8 Preview — Core Engine Orchestrator
+
+File: `src/engine/index.ts`
+
+Wires: scan → analyze → git → buildGraph → persist → (optional LLM semantic)
+Export: `runInit(repoRoot, options): Promise<InitResult>`
+Options: `{ maxCommits?, verbose?, semantic?, llm?: LLMAdapter }`
+
+Key: saves `file_cache` entries per file (contentHash + analyzerVersion + schemaVersion + lastGitCommit).
+Key: LLM enrichment only called if `options.semantic && options.llm` — never by default.
 
 ---
 
 ## Verification Protocol
 
-After completing each sub-task:
-1. Run `npm run typecheck` — must exit 0
-2. Write and run a temporary smoke test (`_test_*.mjs`, ignored by git) via `npx tsx`
-3. Delete the smoke test file
-4. Update status in this file and in `debob-plan.md`
+After each sub-task:
+1. `npm run typecheck` — must exit 0 with zero errors
+2. Write `_test_<n>.mjs`, run with `npx tsx _test_<n>.mjs`, delete after passing
+3. Update status table in this file and corresponding status in `debob-plan.md`
 
 ---
 
@@ -211,7 +221,7 @@ After completing each sub-task:
 npm run typecheck      # tsc --noEmit — must always pass
 npm run build          # tsup → dist/
 npm run dev            # tsx bin/debob.ts (dev run)
-npx tsx <file>         # run a TypeScript file directly (for smoke tests)
+npx tsx <file.mjs>     # run a TypeScript/JS file directly
 node dist/debob.js     # run compiled output
 ```
 
@@ -219,8 +229,10 @@ node dist/debob.js     # run compiled output
 
 ## Important: What NOT to do
 
-- Do NOT add `better-sqlite3` or native `tree-sitter` — they require Visual Studio on Windows
+- Do NOT change `web-tree-sitter` version away from `"0.22.6"` (exact pin, no caret)
+- Do NOT add `better-sqlite3` or native `tree-sitter` — require Visual Studio on Windows
 - Do NOT store raw author emails, API keys, tokens, or `.env` values in `.debob/`
-- Do NOT send full source files to the LLM — only `ModuleContext` slices from the query layer
+- Do NOT send full source files to the LLM — only `ModuleContext` slices from query layer
 - Do NOT add per-module JSON files to `.debob/` — SQLite only in V1
-- Do NOT implement `debob review`, `debob update`, `debob explain` yet — out of scope for this plan
+- Do NOT implement `debob review`, `debob update`, `debob explain` yet — out of scope
+- Do NOT call `adapter.close()` forget — sql.js won't persist without it
