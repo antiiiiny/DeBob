@@ -619,6 +619,245 @@ Write `docs/architecture.md` and finalize `README.md`. This document is the prim
 
 ---
 
+## Sub-Tasks F–J — Hackathon Demo Hardening (2026-08-29)
+
+> Follow-on work after Sub-Tasks A–E (see `debob-impl-plan.md`), scoped for demo readiness:
+> harden the existing `debob review` command, add `debob explain` (free-text Q&A), wire the
+> mechanism that makes any AI coding agent discover the graph automatically, add a second
+> language analyzer, and document team-sharing/automation options. Executed in order F → J.
+
+---
+
+### Sub-Task F — Harden `debob review`
+
+**Status:** `[x] done`
+
+**Intent:**
+`debob review` was functionally complete (Sub-Task D) but untested against real failure modes
+that would be visible on stage: LLM timeouts, response truncation, renamed files, and a
+misleading two-dot diff base. Harden it against all of these using real rehearsal, not just
+code review.
+
+**Expected Outcomes:**
+- `WatsonxProvider._chat()` has an explicit `maxTokens` and a bounded timeout
+- `runReview` closes its DB adapter via `try/finally` even if `explainDiff` throws
+- `extractChangedPaths` captures both sides of a rename
+- `--base` uses three-dot (`base...HEAD`) diff semantics
+- "No diff found" renders as a calm message, not a red failure banner
+- Changed files missing from the graph produce a `notes` message pointing at `debob update`
+- Rehearsed against: real diff (this repo), no-diff clean tree, non-git directory, diverged
+  `--base` branches — all produce clean, non-hanging output
+
+**Todo List:**
+1. `src/llm/providers/watsonx.ts` `_chat()`: add `maxTokens: 4096` to the `textChat()` call —
+   discovered via rehearsal that watsonx's own default (1024) is too low for reasoning-capable
+   models (e.g. `openai/gpt-oss-120b`), which spend tokens on hidden `reasoning_content` before
+   any visible answer and hit `finish_reason: "length"` with empty `content`
+2. Wrap the `textChat()` call in `Promise.race` against a `CHAT_TIMEOUT_MS` (60s, calibrated
+   against real reasoning-model latency during rehearsal — 25s was too tight) timeout rejection
+3. On truncated response (`finish_reason === 'length'`), throw a specific, actionable error
+   instead of the generic "unexpected response shape" message
+4. `src/engine/review.ts` `extractChangedPaths`: match both `a/` and `b/` paths from each
+   `diff --git` header (rename support)
+5. `src/engine/review.ts`: switch `--base` diff to `git diff base...HEAD` (three-dot / merge-base)
+6. Wrap `runReview`'s DB-adapter usage in `try/finally` so `adapter.close()` always runs
+7. Add `ReviewResult.notes: string[]` — populated when changed paths aren't found in the graph
+8. `bin/debob.ts`: print `notes` in yellow; render "No diff found" via `chalk.dim` instead of
+   `chalk.red`, and `spinner.stop()` instead of `spinner.fail()` for that specific case
+
+**Relevant Context:**
+- `src/llm/providers/watsonx.ts` — `_chat()`, `CHAT_TIMEOUT_MS`
+- `src/engine/review.ts` — `extractChangedPaths`, `runReview`
+- `bin/debob.ts` — `review` command's catch blocks
+- Discovered live during rehearsal against this repo's own working-tree diff — not a
+  hypothetical: the untimed/untokened version genuinely failed on a 5-file, 35-neighbour diff
+
+---
+
+### Sub-Task G — `debob explain` (Free-Text Q&A)
+
+**Status:** `[x] done`
+
+**Intent:**
+Implement the `debob explain <question>` command, wiring the previously-stubbed
+`LLMAdapter.answerQuestion` through a new keyword-overlap retrieval layer. This is the
+highest-leverage new capability: it turns DeBob from "dashboards + commands a human runs" into
+something an agent (or a person) can ask questions of directly.
+
+**Expected Outcomes:**
+- `src/query/index.ts` exports `findRelevantNodes(graph, question, enrichments?, limit?)`
+- `src/engine/explain.ts` exports `runExplain(repoRoot, options): Promise<ExplainResult>`
+- `WatsonxProvider.answerQuestion()` is implemented (was a stub)
+- `debob explain "<question>"` works end-to-end, grounded in real graph data
+- `ExplainResult`/`ExplainOptions` exported from `src/types/index.ts`
+- Rehearsed against this repo with real questions (e.g. "what does the scanner do?")
+
+**Todo List:**
+1. `src/query/index.ts`: add `findRelevantNodes` — tokenizes the question (lowercase,
+   stopword-stripped), scores each node against `id`/`name`/`type`/`layer` (weight 1) and cached
+   `semantic_enrichments` `responsibility` text (weight 2), returns the top-N non-zero scores.
+   Deliberately keyword-based, not embeddings — deterministic and explainable, matching the
+   project's "every inference traceable" philosophy
+2. `src/engine/explain.ts`: `runExplain` — open DB (throw if missing, same as `review.ts`),
+   read graph + all `semantic_enrichments`, call `findRelevantNodes`, join cached
+   `responsibility` text onto the matched nodes (`Node.responsibility` itself is never populated
+   in the persisted graph — only `semantic_enrichments` is), collect edges via `getNodeEdges`,
+   build `QueryContext`, call `llm.answerQuestion()`. `try/finally` around `adapter.close()`
+3. `src/llm/providers/watsonx.ts`: implement `answerQuestion()` — prompt lists relevant nodes
+   (id, type, layer, responsibility) and edges ("A --imports--> B"), system message enforces
+   "graph metadata only, no raw source, say so if the data is insufficient"
+4. `bin/debob.ts`: add `explain <question>` command (positional arg); extract the
+   previously-triplicated LLM credential-resolution block (`init`/`update`/`review`) into a
+   single `resolveLLMAdapter(mode: 'warn' | 'error')` helper and reuse it in all four commands
+5. Add `ExplainResult`/`ExplainOptions` to `src/types/index.ts`
+6. Fix stale JSDoc on `LLMAdapter.explainDiff`/`answerQuestion` in `src/llm/adapter.ts` — both
+   said "future command — not yet implemented"; also document that `DiffContext.diff` (raw
+   unified diff) is the one deliberate exception to "never send raw source"
+
+**Relevant Context:**
+- `src/llm/adapter.ts` — `QueryContext` type (already defined, unused until now)
+- `src/persistence/interface.ts` — `SemanticEnrichment`
+- Answering "what does the scanner do?" during rehearsal surfaced a real, separate bug in the
+  TS analyzer's import resolution — see Sub-Task H
+
+---
+
+### Sub-Task H — Fix `.js`-suffixed Relative Import Resolution (TS Analyzer)
+
+**Status:** `[x] done`
+
+**Intent:**
+Discovered via `debob explain` rehearsal, not code review: this codebase (and any ESM-TS
+project) imports relative modules with the compiled extension (`import { X } from
+'../scanner/index.js'`) even though the file on disk is `.ts`. `resolveImportTarget` in the TS
+analyzer only extension-probed when the specifier had **no** extension at all — a specifier
+ending in `.js` skipped the probe entirely and resolved to a literal, non-existent `.js` path,
+creating a disconnected phantom stub `file` node for every relative import in the entire
+codebase. This fragmented the graph badly enough that `debob explain "what does the scanner
+do?"` answered partly from a fake "index.js — placeholder, no implementation" stub instead of
+the real, fully-analyzed `index.ts` node.
+
+**Expected Outcomes:**
+- Relative imports ending in `.js`/`.jsx`/`.mjs`/`.cjs` resolve to the real `.ts`/`.tsx`/`.mts`/
+  `.cts` source file when a literal file of that name doesn't exist on disk
+- A literal `.js` file (plain-JS projects) still resolves to itself, unchanged
+- Re-running `debob update` on this repo no longer produces `index.js`-style phantom nodes for
+  files that are actually `.ts`
+
+**Todo List:**
+1. `src/analyzers/typescript/index.ts`: add `COMPILED_TO_SOURCE_EXT` map (`.js` → `.ts`/`.tsx`,
+   `.jsx` → `.tsx`, `.mjs` → `.mts`, `.cjs` → `.cts`)
+2. In `resolveImportTarget`, before the existing no-extension probe: if the specifier's
+   extension is a compiled extension, check the literal path first (real `.js` file wins if it
+   exists), otherwise probe the mapped source extensions and return the first that exists on disk
+3. Verified via `debob update` on this repo — re-analyzed files no longer generate `.js` stub
+   nodes for internal modules
+
+**Relevant Context:**
+- `src/analyzers/typescript/index.ts` — `resolveImportTarget`
+- This is the most severe correctness bug found this session — it affected essentially every
+  relative import in DeBob's own self-analysis, since the whole codebase uses this import style
+
+---
+
+### Sub-Task I — Agent-Discoverable Instructions (`AGENTS.md` Auto-Block)
+
+**Status:** `[x] done`
+
+**Intent:**
+The actual mechanism behind DeBob's core pitch — "`debob init`, then any agent knows what to
+do" — didn't exist before this. `.bob/skills/debob-query/SKILL.md` only fires for the "Bob"
+product specifically, and the root `AGENTS.md` (the cross-agent convention Claude Code, Cursor,
+Codex, etc. auto-load) never mentioned the graph at all. Make `debob init`/`debob update` write
+a delimited, idempotent block into the repo's root `AGENTS.md` that tells any agent to prefer
+`debob explain`/`debob review` over reading raw source.
+
+**Expected Outcomes:**
+- `src/engine/agentInstructions.ts` exports `writeAgentInstructions(repoRoot, manifest)`
+- Called at the end of both `runInit` and `runUpdate`, wrapped in try/catch (non-fatal — a
+  write failure here must never abort the structural pipeline)
+- Creates `AGENTS.md` if absent; regenerates only the `<!-- DEBOB:START -->...<!-- DEBOB:END -->`
+  marked region if present, leaving the rest of a hand-written file untouched
+- Block content leads with the CLI (`debob explain`/`debob review`), not internal APIs — any
+  agent with shell access can use it without understanding DeBob's TypeScript internals
+- Verified on this repo: `debob update` appended the block to the existing root `AGENTS.md`
+  without disturbing its existing content
+
+**Todo List:**
+1. `src/engine/agentInstructions.ts`: `buildBlock(manifest)` — states the graph exists, gives
+   `debob explain`/`debob review` usage examples, a staleness-check one-liner
+   (`manifest.headCommit` vs `git rev-parse HEAD`), and a pointer to
+   `.bob/skills/debob-query/SKILL.md` for advanced/raw queries
+2. `writeAgentInstructions(repoRoot, manifest)`: create-or-splice logic using `BLOCK_START`/
+   `BLOCK_END` markers
+3. Wire into `src/engine/index.ts`: extract the manifest object literal to a `manifestData`
+   variable in both `runInit` and `runUpdate` (was inline before), call `writeManifest` then
+   `writeAgentInstructions` inside try/catch, log the outcome either way
+
+**Relevant Context:**
+- `src/persistence/sqlite.ts` — `Manifest` type (reused, not duplicated)
+- `.bob/skills/debob-query/SKILL.md` — kept as the power-user fallback, referenced from the block
+- This repo's own root `AGENTS.md` still has a stale "What Is NOT Implemented Yet (Sub-Tasks
+  7–11)" section from before Sub-Tasks 7-11 shipped — worth a manual cleanup pass separate from
+  the auto-generated block, which only manages its own marked region
+
+---
+
+### Sub-Task J — Python Analyzer, Auto-Update Hook, Team-Sharing Docs
+
+**Status:** `[x] done`
+
+**Intent:**
+Three smaller, independent demo-value items: prove the `LanguageAnalyzer` interface is
+genuinely language-agnostic (not TS-only), offer a zero-friction way to keep the graph current,
+and document the tradeoffs of sharing `.debob/` across a team.
+
+**Expected Outcomes:**
+- `src/analyzers/python/index.ts` implements `LanguageAnalyzer` for `.py` files: imports
+  (absolute → `pkg::` stub, relative `from .foo import x` → filesystem-resolved), `function`/
+  `class` nodes (including nested methods). Deliberately no base-class edges — the TS analyzer's
+  unqualified extends/implements targets create phantom stub nodes for colliding names; skipped
+  here rather than inherited into a second language
+- `.py` registered in the scanner (`TEXT_EXTENSIONS`, `detectLanguage`) and the engine's
+  analyzer registry
+- `githooks/post-commit`: opt-in (`git config core.hooksPath githooks`), runs `debob update` in
+  the background after every commit, never blocks the commit
+- README documents: the `explain` command, the `AGENTS.md` mechanism, language support scope,
+  team-sharing tradeoffs for committing `.debob/`, and the post-commit hook
+
+**Todo List:**
+1. `src/analyzers/python/index.ts`: grammar node names verified empirically (not guessed) via a
+   throwaway AST dump script against `tree-sitter-python.wasm` — `import_statement` /
+   `import_from_statement` / `relative_import` (with `import_prefix` dot-count + optional
+   `dotted_name` submodule) / `function_definition` / `class_definition`, `name` as a proper
+   tree-sitter field on both definition types
+2. Relative-import resolution mirrors the TS analyzer's probe-then-fallback-to-stub pattern:
+   try `<path>.py` then `<path>/__init__.py`
+3. `src/scanner/types.ts` + `src/scanner/index.ts`: add `'python'` to `ScannedFile['language']`,
+   `PYTHON_EXTENSIONS`, `.py` in `TEXT_EXTENSIONS`
+4. `src/engine/index.ts` `buildAnalyzerRegistry`: register `PythonAnalyzer` alongside
+   `TypeScriptAnalyzer`
+5. `githooks/post-commit`: guarded (`exit 0` if not a repo or `.debob/context.db` doesn't exist
+   yet — never force-inits a repo that hasn't opted in), backgrounds `debob update` with output
+   redirected to `.git/debob-update.log`, always exits 0 immediately
+6. README: new "Sharing the graph with your team" and "Keeping it current automatically"
+   subsections under "What Gets Built"; new "Language support" subsection; `explain` command
+   documented in both the walkthrough and the Commands reference; "How AI Agents Use DeBob"
+   rewritten to lead with the `AGENTS.md` auto-block mechanism instead of raw SQL-shaped examples
+
+**Relevant Context:**
+- `src/analyzers/interface.ts` — `LanguageAnalyzer` (no changes needed — validates the interface
+  was designed correctly the first time)
+- Rehearsed end-to-end against a scratch mixed-language repo (`.py` + `.md`) — `debob init`
+  produced correct node/edge counts (verified by hand: 4 file nodes + 4 symbol nodes including a
+  nested method + 2 package nodes = 10 nodes; import edges deduplicated correctly when two
+  different import statements resolved to the same target file)
+- Hook tested by direct invocation (not by setting `core.hooksPath` on this repo, per the "never
+  change git config without being asked" rule) — confirmed it returns immediately and the
+  backgrounded update completes and logs successfully
+
+---
+
 ## Implementation Order
 
 ```

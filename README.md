@@ -59,7 +59,15 @@ node dist/bin/debob.js update
 
 Only files whose content has changed since the last run are re-analyzed. Unchanged files are skipped entirely.
 
-### Step 5 — Review a diff
+### Step 5 — Ask a question
+
+```bash
+node dist/bin/debob.js explain "what does the scanner do?"
+```
+
+Answers free-form architecture/dependency/responsibility questions from the graph alone — never by reading raw source. Requires watsonx credentials. This is also what `debob init` teaches any AI coding agent to reach for automatically (see [How AI Agents Use DeBob](#how-ai-agents-use-debob) below) instead of grepping through files.
+
+### Step 6 — Review a diff
 
 Before committing or reviewing a PR, explain the architectural impact of your changes:
 
@@ -189,6 +197,30 @@ node dist/bin/debob.js review --base main
 
 ---
 
+### `explain` — Ask a free-form question
+
+```bash
+node dist/bin/debob.js explain "<question>" [options]
+```
+
+Scores every graph node against the question by keyword overlap (path, name, type, layer, and cached `responsibility` enrichment text when available), assembles the top matches plus their edges, and asks the LLM to answer grounded in that slice — never raw source.
+
+| Option | Description | Default |
+|---|---|---|
+| `--repo <path>` | Path to the repository root | current directory |
+| `--verbose` | Show how many relevant nodes were found | off |
+
+Requires watsonx credentials. Quote multi-word questions.
+
+**Example:**
+
+```bash
+node dist/bin/debob.js explain "what does the persistence adapter do?"
+node dist/bin/debob.js explain "which files are in the data layer?"
+```
+
+---
+
 ## IBM watsonx Credentials
 
 Place these in a `.env` file at the repository root. The CLI loads it automatically at startup — no `export` needed.
@@ -236,27 +268,41 @@ Credentials are **never** written to `.debob/` or any config file. If any variab
 
 See [`docs/architecture.md`](docs/architecture.md) for the full schema and design rationale.
 
+### Language support
+
+TypeScript/JavaScript (`.ts`/`.tsx`/`.js`/`.jsx`/`.mjs`/`.cjs`) is the full-depth V1 analyzer: imports, exports, functions, classes, interfaces, extends/implements. Python (`.py`) has a shallow analyzer: imports (including relative `from .foo import x`) and function/class nodes, no base-class edges. Both implement the same `LanguageAnalyzer` plugin interface — new languages are added by implementing it and registering an extension, no engine changes required.
+
+### Sharing the graph with your team (optional)
+
+`.debob/` is gitignored by default. If you'd rather the graph travel with the repo instead of staying local to one machine, remove the `.debob/` line from `.gitignore` and commit it. Tradeoff to know before you do: `context.db` is a single binary SQLite file, so two people running `debob update` on different branches will hit an unresolvable binary merge conflict, and repo history grows by a full DB copy on every commit that changes it. Works well with a single owner (or a CI job) regenerating it; less well with everyone updating it locally.
+
+### Keeping it current automatically (optional)
+
+A sample `git` hook is provided at [`githooks/post-commit`](githooks/post-commit) — it runs `debob update` in the background after every commit, without blocking or failing the commit. Opt in with:
+
+```bash
+git config core.hooksPath githooks
+```
+
 ---
 
 ## How AI Agents Use DeBob
 
-Instead of reading source files (expensive, noisy), an agent queries the graph:
+This is the actual point of DeBob: `debob init`/`debob update` doesn't just build the graph — it also writes a delimited block into the repository's root `AGENTS.md` (creating the file if it doesn't exist) so that **any** AI coding agent working in the repo discovers the graph automatically, not just DeBob's own tooling. The block tells the agent to prefer these commands over reading raw source for structural questions:
 
-```
-"What does src/engine/index.ts do?"
-→ read semantic_enrichments WHERE node_id = 'src/engine/index.ts' AND field = 'responsibility'
+```bash
+# Answer a free-form question, grounded in the graph
+npx debob explain "what does src/engine/index.ts do?"
+npx debob explain "what imports src/persistence/sqlite.ts?"
+npx debob explain "which files are in the data layer?"
 
-"What imports src/persistence/sqlite.ts?"
-→ filter edges WHERE target = 'src/persistence/sqlite.ts' AND type = 'imports'
-
-"Which files are in the data layer?"
-→ filter nodes WHERE layer = 'data'
-
-"Which files are most volatile?"
-→ filter nodes WHERE metadata.hot = true, sort by churnScore desc
+# Explain the impact of a diff
+npx debob review [--base <ref>]
 ```
 
-The Bob skill at [`.bob/skills/debob-query/SKILL.md`](.bob/skills/debob-query/SKILL.md) teaches Bob how to run these queries from chat without opening source files.
+The block is idempotent — re-running `init`/`update` regenerates only the marked `<!-- DEBOB:START -->...<!-- DEBOB:END -->` region, never touching the rest of a hand-written `AGENTS.md`.
+
+For advanced or raw graph queries the CLI doesn't cover, the Bob skill at [`.bob/skills/debob-query/SKILL.md`](.bob/skills/debob-query/SKILL.md) documents the underlying SQL/TypeScript query patterns directly (e.g. `filter edges WHERE target = X AND type = 'imports'`) — useful for one-off exploration, but `debob explain`/`debob review` are the primary interface: any agent with shell access can use them without knowing anything about DeBob's internals.
 
 ---
 

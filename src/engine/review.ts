@@ -31,17 +31,28 @@ export interface ReviewResult {
   neighbourhoodSize: number
   /** LLM explanation of the diff's architectural impact. */
   explanation: string
+  /** Non-fatal notes about the review (e.g. changed files not yet in the graph). */
+  notes: string[]
 }
 
 // ─── Diff helpers ─────────────────────────────────────────────────────────────
 
-/** Extract repo-relative file paths from a unified diff string. */
+/**
+ * Extract repo-relative file paths from a unified diff string.
+ *
+ * Captures both the `a/` (old) and `b/` (new) path from each `diff --git` header so that
+ * renamed files have the best chance of resolving against whatever the graph currently has —
+ * the graph may still hold the old path (not yet `debob update`d) or the new one.
+ */
 function extractChangedPaths(rawDiff: string): string[] {
   const paths = new Set<string>()
   for (const line of rawDiff.split('\n')) {
     // Match: diff --git a/<path> b/<path>
-    const m = line.match(/^diff --git a\/(.+?) b\//)
-    if (m) paths.add(m[1])
+    const m = line.match(/^diff --git a\/(.+?) b\/(.+)$/)
+    if (m) {
+      paths.add(m[1])
+      paths.add(m[2])
+    }
   }
   return [...paths]
 }
@@ -72,8 +83,10 @@ export async function runReview(repoRoot: string, options: ReviewOptions): Promi
   let rawDiff: string
   try {
     const git = simpleGit(repoRoot)
+    // Three-dot diff: compares HEAD against the merge-base of `base` and HEAD, so a diverged
+    // base branch doesn't pull in unrelated changes — matches typical "review my branch" intent.
     rawDiff = base
-      ? await git.diff([`${base}..HEAD`])
+      ? await git.diff([`${base}...HEAD`])
       : await git.diff(['HEAD'])
   } catch {
     throw new Error('Not a Git repository or git is not available.')
@@ -98,80 +111,92 @@ export async function runReview(repoRoot: string, options: ReviewOptions): Promi
 
   const { db } = await openDb(repoRoot)
   const adapter = new SqlitePersistenceAdapter(db, dbPath)
-  const graph = adapter.readGraph()
 
-  // ─── Step 3: find affected nodes ───────────────────────────────────────────
+  try {
+    const graph = adapter.readGraph()
 
-  const affectedNodes: Node[] = []
-  for (const p of changedPaths) {
-    const node = graph.nodes.get(p)
-    if (node) affectedNodes.push(node)
-  }
+    // ─── Step 3: find affected nodes ─────────────────────────────────────────
 
-  // ─── Step 4: collect 2-hop neighbourhood ───────────────────────────────────
+    const affectedNodes: Node[] = []
+    for (const p of changedPaths) {
+      const node = graph.nodes.get(p)
+      if (node) affectedNodes.push(node)
+    }
 
-  const neighbourMap = new Map<string, Node>()
-  for (const node of affectedNodes) {
-    const neighbours = getNodeNeighbours(graph, node.id, 2)
-    for (const n of neighbours) {
-      if (!affectedNodes.some(a => a.id === n.id)) {
-        neighbourMap.set(n.id, n)
+    const notes: string[] = []
+    if (affectedNodes.length < changedPaths.length) {
+      notes.push(
+        `${changedPaths.length - affectedNodes.length} of ${changedPaths.length} changed path(s) ` +
+          `were not found in the graph — run 'debob update' to pick up new/renamed files before reviewing.`,
+      )
+    }
+
+    // ─── Step 4: collect 2-hop neighbourhood ─────────────────────────────────
+
+    const neighbourMap = new Map<string, Node>()
+    for (const node of affectedNodes) {
+      const neighbours = getNodeNeighbours(graph, node.id, 2)
+      for (const n of neighbours) {
+        if (!affectedNodes.some(a => a.id === n.id)) {
+          neighbourMap.set(n.id, n)
+        }
       }
     }
-  }
-  const neighbourNodes = [...neighbourMap.values()]
+    const neighbourNodes = [...neighbourMap.values()]
 
-  if (verbose) {
-    console.log(`[debob review] ${affectedNodes.length} affected node(s), ${neighbourNodes.length} neighbour(s).`)
-  }
+    if (verbose) {
+      console.log(`[debob review] ${affectedNodes.length} affected node(s), ${neighbourNodes.length} neighbour(s).`)
+    }
 
-  // ─── Step 5: read cached semantic enrichments ──────────────────────────────
+    // ─── Step 5: read cached semantic enrichments ────────────────────────────
 
-  const allNodeIds = [
-    ...affectedNodes.map(n => n.id),
-    ...neighbourNodes.map(n => n.id),
-  ]
-  const enrichments = adapter.readSemanticEnrichments(allNodeIds.length > 0 ? allNodeIds : undefined)
+    const allNodeIds = [
+      ...affectedNodes.map(n => n.id),
+      ...neighbourNodes.map(n => n.id),
+    ]
+    const enrichments = adapter.readSemanticEnrichments(allNodeIds.length > 0 ? allNodeIds : undefined)
 
-  // Build layer summary from layer-type enrichments
-  const layerSet = new Set<string>()
-  for (const e of enrichments) {
-    if (e.field === 'layer') layerSet.add(e.value)
-  }
-  // Also include any layer already on the node itself
-  for (const n of affectedNodes) {
-    if (n.layer) layerSet.add(n.layer)
-  }
-  const layersSummary = [...layerSet].sort()
+    // Build layer summary from layer-type enrichments
+    const layerSet = new Set<string>()
+    for (const e of enrichments) {
+      if (e.field === 'layer') layerSet.add(e.value)
+    }
+    // Also include any layer already on the node itself
+    for (const n of affectedNodes) {
+      if (n.layer) layerSet.add(n.layer)
+    }
+    const layersSummary = [...layerSet].sort()
 
-  // ─── Step 6: build neighbourhood sub-graph ─────────────────────────────────
+    // ─── Step 6: build neighbourhood sub-graph ───────────────────────────────
 
-  const allIds = new Set(allNodeIds)
-  const neighbourEdges = graph.edges.filter(
-    e => allIds.has(e.source) && allIds.has(e.target),
-  )
-  const neighbourGraph: Graph = {
-    nodes: new Map(neighbourNodes.map(n => [n.id, n])),
-    edges: neighbourEdges,
-  }
+    const allIds = new Set(allNodeIds)
+    const neighbourEdges = graph.edges.filter(
+      e => allIds.has(e.source) && allIds.has(e.target),
+    )
+    const neighbourGraph: Graph = {
+      nodes: new Map(neighbourNodes.map(n => [n.id, n])),
+      edges: neighbourEdges,
+    }
 
-  // ─── Step 7: assemble DiffContext and call LLM ─────────────────────────────
+    // ─── Step 7: assemble DiffContext and call LLM ───────────────────────────
 
-  const diffContext: DiffContext = {
-    diff: truncateDiff(rawDiff),
-    affectedNodes,
-    neighbourhood: neighbourGraph,
-    layersSummary,
-  }
+    const diffContext: DiffContext = {
+      diff: truncateDiff(rawDiff),
+      affectedNodes,
+      neighbourhood: neighbourGraph,
+      layersSummary,
+    }
 
-  const explanation = await llm.explainDiff(diffContext)
+    const explanation = await llm.explainDiff(diffContext)
 
-  adapter.close()
-
-  return {
-    affectedFiles: changedPaths,
-    affectedLayers: layersSummary,
-    neighbourhoodSize: neighbourNodes.length,
-    explanation,
+    return {
+      affectedFiles: changedPaths,
+      affectedLayers: layersSummary,
+      neighbourhoodSize: neighbourNodes.length,
+      explanation,
+      notes,
+    }
+  } finally {
+    adapter.close()
   }
 }

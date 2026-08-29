@@ -32,6 +32,7 @@ import ora from 'ora'
 import open from 'open'
 import { runInit, runUpdate } from '../src/engine/index.js'
 import { runReview } from '../src/engine/review.js'
+import { runExplain } from '../src/engine/explain.js'
 import { createLLMAdapter } from '../src/llm/index.js'
 import type { LLMAdapter } from '../src/llm/adapter.js'
 import { startVisualiserServer } from '../src/visualiser/server.js'
@@ -44,6 +45,45 @@ const builtPackagePath = fileURLToPath(new URL('../../package.json', import.meta
 const pkg = _require(existsSync(sourcePackagePath) ? sourcePackagePath : builtPackagePath) as {
   version: string
   description: string
+}
+
+// ─── LLM credential resolution ─────────────────────────────────────────────────
+//
+// Shared by every command that can call watsonx. 'warn' mode (init/update --semantic) treats
+// missing/broken credentials as non-fatal — the command continues without LLM enrichment.
+// 'error' mode (review/explain) treats the LLM as mandatory and exits the process.
+
+function resolveLLMAdapter(mode: 'warn'): LLMAdapter | undefined
+function resolveLLMAdapter(mode: 'error'): LLMAdapter
+function resolveLLMAdapter(mode: 'warn' | 'error'): LLMAdapter | undefined {
+  const apiKey = process.env['WATSONX_API_KEY']
+  const projectId = process.env['WATSONX_PROJECT_ID']
+  const url = process.env['WATSONX_URL']
+  const modelId = process.env['WATSONX_MODEL_ID']
+
+  if (!apiKey || !projectId || !url || !modelId) {
+    const missing = 'WATSONX_API_KEY, WATSONX_PROJECT_ID, WATSONX_URL, and WATSONX_MODEL_ID'
+    if (mode === 'error') {
+      console.error(
+        chalk.red(`\n✖  This command requires ${missing}.\n   Set them in a .env file at the repository root.`),
+      )
+      process.exit(1)
+    }
+    console.warn(chalk.yellow(`⚠  --semantic was set but ${missing} is missing — skipping LLM enrichment.`))
+    return undefined
+  }
+
+  try {
+    return createLLMAdapter('watsonx', { provider: 'watsonx', apiKey, projectId, url, modelId })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (mode === 'error') {
+      console.error(chalk.red(`\n✖  LLM adapter could not be created: ${msg}`))
+      process.exit(1)
+    }
+    console.warn(chalk.yellow(`⚠  LLM adapter could not be created: ${msg} — skipping LLM enrichment.`))
+    return undefined
+  }
 }
 
 // ─── Program ──────────────────────────────────────────────────────────────────
@@ -73,28 +113,7 @@ program
 
       // ─── Resolve LLM adapter (--semantic) ──────────────────────────────────
 
-      let llm: LLMAdapter | undefined
-      if (semantic) {
-        const apiKey = process.env['WATSONX_API_KEY']
-        const projectId = process.env['WATSONX_PROJECT_ID']
-        const url = process.env['WATSONX_URL']
-        const modelId = process.env['WATSONX_MODEL_ID']
-
-        if (!apiKey || !projectId || !url || !modelId) {
-          console.warn(
-            chalk.yellow(
-              '⚠  --semantic was set but WATSONX_API_KEY, WATSONX_PROJECT_ID, WATSONX_URL, or WATSONX_MODEL_ID is missing — skipping LLM enrichment.',
-            ),
-          )
-        } else {
-          try {
-            llm = createLLMAdapter('watsonx', { provider: 'watsonx', apiKey, projectId, url, modelId })
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err)
-            console.warn(chalk.yellow(`⚠  LLM adapter could not be created: ${msg} — skipping LLM enrichment.`))
-          }
-        }
-      }
+      const llm: LLMAdapter | undefined = semantic ? resolveLLMAdapter('warn') : undefined
 
       // ─── Run engine ────────────────────────────────────────────────────────
 
@@ -235,28 +254,7 @@ program
 
       // ─── Resolve LLM adapter (--semantic) ──────────────────────────────────
 
-      let llm: LLMAdapter | undefined
-      if (semantic) {
-        const apiKey = process.env['WATSONX_API_KEY']
-        const projectId = process.env['WATSONX_PROJECT_ID']
-        const url = process.env['WATSONX_URL']
-        const modelId = process.env['WATSONX_MODEL_ID']
-
-        if (!apiKey || !projectId || !url || !modelId) {
-          console.warn(
-            chalk.yellow(
-              '⚠  --semantic was set but WATSONX_API_KEY, WATSONX_PROJECT_ID, WATSONX_URL, or WATSONX_MODEL_ID is missing — skipping LLM enrichment.',
-            ),
-          )
-        } else {
-          try {
-            llm = createLLMAdapter('watsonx', { provider: 'watsonx', apiKey, projectId, url, modelId })
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err)
-            console.warn(chalk.yellow(`⚠  LLM adapter could not be created: ${msg} — skipping LLM enrichment.`))
-          }
-        }
-      }
+      const llm: LLMAdapter | undefined = semantic ? resolveLLMAdapter('warn') : undefined
 
       // ─── Run engine ────────────────────────────────────────────────────────
 
@@ -326,29 +324,7 @@ program
 
       // ─── Resolve LLM adapter (required for review) ─────────────────────────
 
-      const apiKey = process.env['WATSONX_API_KEY']
-      const projectId = process.env['WATSONX_PROJECT_ID']
-      const url = process.env['WATSONX_URL']
-      const modelId = process.env['WATSONX_MODEL_ID']
-
-      if (!apiKey || !projectId || !url || !modelId) {
-        console.error(
-          chalk.red(
-            '\n✖  debob review requires WATSONX_API_KEY, WATSONX_PROJECT_ID, WATSONX_URL, and WATSONX_MODEL_ID.\n' +
-            '   Set them in a .env file at the repository root.',
-          ),
-        )
-        process.exit(1)
-      }
-
-      let llm: LLMAdapter
-      try {
-        llm = createLLMAdapter('watsonx', { provider: 'watsonx', apiKey, projectId, url, modelId })
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(chalk.red(`\n✖  LLM adapter could not be created: ${msg}`))
-        process.exit(1)
-      }
+      const llm = resolveLLMAdapter('error')
 
       // ─── Run review ────────────────────────────────────────────────────────
 
@@ -359,7 +335,12 @@ program
         result = await runReview(repoRoot, { base: opts.base, verbose, llm })
         spinner.succeed(chalk.green('Review complete'))
       } catch (err) {
-        spinner.fail(chalk.red('Review failed'))
+        const msg = err instanceof Error ? err.message : String(err)
+        if (msg === 'No diff found. Nothing to review.') {
+          spinner.stop()
+        } else {
+          spinner.fail(chalk.red('Review failed'))
+        }
         throw err
       }
 
@@ -375,10 +356,75 @@ program
       console.log()
       console.log(chalk.cyan('  Layers touched    :'), result.affectedLayers.join(', ') || 'none')
       console.log(chalk.cyan('  Neighbourhood     :'), result.neighbourhoodSize, 'nodes')
+      if (result.notes.length > 0) {
+        console.log()
+        for (const note of result.notes) {
+          console.log(chalk.yellow('  ⚠  ' + note))
+        }
+      }
       console.log()
       console.log(chalk.bold('  Impact analysis:'))
       console.log()
       for (const line of result.explanation.split('\n')) {
+        console.log('  ' + line)
+      }
+      console.log()
+      console.log(chalk.bold('─────────────────────────────────────────────────────────'))
+      console.log()
+
+      process.exit(0)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg === 'No diff found. Nothing to review.') {
+        console.log(chalk.dim(`\n  ${msg}`))
+        process.exit(1)
+      }
+      console.error(chalk.red(`\n✖  ${msg}`))
+      process.exit(1)
+    }
+  })
+
+// ─── explain command ────────────────────────────────────────────────────────
+
+program
+  .command('explain <question>')
+  .description('Answer a free-form question about the repository using the graph (quote multi-word questions)')
+  .option('--repo <path>', 'Path to the repository root', process.cwd())
+  .option('--verbose', 'Show detailed progress output')
+  .action(async (question: string, opts: { repo: string; verbose?: boolean }) => {
+    try {
+      const repoRoot = opts.repo
+      const verbose = opts.verbose ?? false
+
+      // ─── Resolve LLM adapter (required for explain) ────────────────────────
+
+      const llm = resolveLLMAdapter('error')
+
+      // ─── Run explain ───────────────────────────────────────────────────────
+
+      const spinner = ora('Querying repository graph…').start()
+
+      let result
+      try {
+        result = await runExplain(repoRoot, { question, verbose, llm })
+        spinner.succeed(chalk.green('Answer ready'))
+      } catch (err) {
+        spinner.fail(chalk.red('Explain failed'))
+        throw err
+      }
+
+      // ─── Render output ─────────────────────────────────────────────────────
+
+      console.log()
+      console.log(chalk.bold('─── DeBob Explain ────────────────────────────────────────'))
+      console.log()
+      console.log(chalk.cyan('  Question :'), result.question)
+      console.log(
+        chalk.cyan('  Grounded in :'),
+        result.relevantFiles.length > 0 ? result.relevantFiles.join(', ') : '(nothing relevant found)',
+      )
+      console.log()
+      for (const line of result.answer.split('\n')) {
         console.log('  ' + line)
       }
       console.log()

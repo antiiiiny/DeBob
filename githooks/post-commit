@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# DeBob post-commit hook — keeps the knowledge graph current automatically.
+#
+# Opt in with:
+#   git config core.hooksPath githooks
+#
+# Runs `debob update` in the background after every commit. Never blocks or
+# fails the commit — post-commit hooks can't reject a commit anyway (it has
+# already happened), but this also avoids making `git commit` visibly hang
+# waiting on a graph update. Does nothing if `debob init` hasn't been run yet
+# in this repo (no point auto-initializing a repo that hasn't opted in).
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+[ -z "$REPO_ROOT" ] && exit 0
+[ -f "$REPO_ROOT/.debob/context.db" ] || exit 0
+
+( cd "$REPO_ROOT" && npx debob update > "$REPO_ROOT/.git/debob-update.log" 2>&1 & ) &
+exit 0

@@ -109,9 +109,14 @@ export interface LLMAdapter {
   /**
    * Explain a diff in the context of the repository graph.
    *
-   * Called by: `debob review` (future command — not yet implemented).
+   * Called by: `debob review`.
    * Context: `DiffContext` including the unified diff, affected nodes, and graph neighbourhood.
    * Output: human-readable explanation of risks and affected workflows.
+   *
+   * Note: `DiffContext.diff` is a raw unified diff — the one deliberate exception to the
+   * "never send raw source" rule elsewhere in this interface. It's unavoidable for explaining
+   * *what changed*, but keep it truncated (see `review.ts`'s `truncateDiff`) rather than sending
+   * whole files.
    *
    * @param context Diff context including affected graph nodes and neighbourhood.
    * @returns Human-readable explanation of the diff's impact.
@@ -121,8 +126,10 @@ export interface LLMAdapter {
   /**
    * Answer a free-form question using targeted graph context.
    *
-   * Called by: `debob explain` (future command — not yet implemented).
-   * Context: `QueryContext` with the question and relevant nodes/edges from the graph.
+   * Called by: `debob explain`.
+   * Context: `QueryContext` with the question and relevant nodes/edges from the graph, selected
+   *          by `findRelevantNodes` (src/query/index.ts) via keyword overlap against node
+   *          id/name/type/layer and cached `responsibility` enrichments.
    * Output: human-readable answer grounded in graph evidence, not raw source.
    *
    * @param context Query context including the question and relevant graph nodes.

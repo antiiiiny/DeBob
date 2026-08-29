@@ -3,11 +3,14 @@ import { join } from 'path'
 import { createRequire } from 'module'
 import { scanRepository } from '../scanner/index.js'
 import { TypeScriptAnalyzer } from '../analyzers/typescript/index.js'
+import { PythonAnalyzer } from '../analyzers/python/index.js'
 import type { LanguageAnalyzer, AnalysisResult } from '../analyzers/interface.js'
 import { extractGitMetadata } from '../git/index.js'
 import { buildGraph } from '../graph/builder.js'
 import type { ArchitecturalLayer, Edge, Graph, Node } from '../graph/types.js'
 import { openDb, readManifest, SqlitePersistenceAdapter, writeManifest } from '../persistence/sqlite.js'
+import type { Manifest } from '../persistence/sqlite.js'
+import { writeAgentInstructions } from './agentInstructions.js'
 import { SCHEMA_VERSION } from '../persistence/schema.js'
 import type { FileCacheEntry, GitFileStats, SemanticEnrichment } from '../persistence/interface.js'
 import type { LLMAdapter } from '../llm/adapter.js'
@@ -87,6 +90,10 @@ async function buildAnalyzerRegistry(repoRoot: string): Promise<Map<string, Lang
   const tsAnalyzer = await TypeScriptAnalyzer.create(repoRoot)
   for (const ext of tsAnalyzer.extensions) {
     registry.set(ext, tsAnalyzer)
+  }
+  const pyAnalyzer = await PythonAnalyzer.create(repoRoot)
+  for (const ext of pyAnalyzer.extensions) {
+    registry.set(ext, pyAnalyzer)
   }
   return registry
 }
@@ -405,7 +412,7 @@ export async function runInit(
   const fileCount = files.length
   const commitCount = gitMetadata.commits.length
 
-  writeManifest(repoRoot, {
+  const manifestData: Manifest = {
     version: pkg.version,
     schemaVersion: SCHEMA_VERSION,
     initAt: now,
@@ -416,8 +423,16 @@ export async function runInit(
     commitCount,
     headCommit: gitMetadata.headCommit,
     semantic,
-  })
+  }
+  writeManifest(repoRoot, manifestData)
   log('manifest', 'written')
+
+  try {
+    writeAgentInstructions(repoRoot, manifestData)
+    log('agents', 'AGENTS.md updated with DeBob discovery block')
+  } catch (err) {
+    log('agents', `could not update AGENTS.md: ${err instanceof Error ? err.message : String(err)}`)
+  }
 
   // ─── Step 10: Build and return InitResult ─────────────────────────────────
 
@@ -710,7 +725,7 @@ export async function runUpdate(
   log('persist', `database saved to ${resolvedDbPath}`)
 
   const pkg = _require('../../package.json') as { version: string }
-  writeManifest(repoRoot, {
+  const manifestData: Manifest = {
     version: pkg.version,
     schemaVersion: SCHEMA_VERSION,
     initAt: manifest.initAt,
@@ -722,8 +737,16 @@ export async function runUpdate(
     commitCount: (manifest.commitCount ?? 0) + newGitMetadata.commits.length,
     headCommit: newGitMetadata.headCommit || manifest.headCommit || '',
     semantic: manifest.semantic || (semantic && llm !== undefined),
-  })
+  }
+  writeManifest(repoRoot, manifestData)
   log('manifest', 'written')
+
+  try {
+    writeAgentInstructions(repoRoot, manifestData)
+    log('agents', 'AGENTS.md updated with DeBob discovery block')
+  } catch (err) {
+    log('agents', `could not update AGENTS.md: ${err instanceof Error ? err.message : String(err)}`)
+  }
 
   // ─── Build UpdateResult ───────────────────────────────────────────────────
 

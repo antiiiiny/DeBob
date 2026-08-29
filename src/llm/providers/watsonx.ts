@@ -2,6 +2,14 @@ import { WatsonXAI } from '@ibm-cloud/watsonx-ai'
 import { IamAuthenticator } from '@ibm-cloud/watsonx-ai/authentication'
 import type { LLMAdapter, LLMConfig, ModuleContext, DiffContext, QueryContext } from '../adapter.js'
 
+/**
+ * Max time to wait for a single watsonx chat call before failing with a clear error.
+ * Reasoning-capable models (e.g. gpt-oss) can take well over 25s to finish their hidden
+ * reasoning pass before emitting a visible answer — calibrated against real runs during
+ * `debob review` rehearsal, not a guess.
+ */
+const CHAT_TIMEOUT_MS = 60_000
+
 // ─── Prompt builders ──────────────────────────────────────────────────────────
 
 /**
@@ -183,11 +191,54 @@ export class WatsonxProvider implements LLMAdapter {
     ])
   }
 
-  // ─── answerQuestion (stub) ──────────────────────────────────────────────────
+  // ─── answerQuestion ─────────────────────────────────────────────────────────
 
-  /** @throws Always — implemented in `debob explain` (future sub-task). */
-  async answerQuestion(_context: QueryContext): Promise<string> {
-    throw new Error('WatsonxProvider.answerQuestion: not yet implemented (debob explain)')
+  /**
+   * Answer a free-form question about the repository using targeted graph context.
+   *
+   * The LLM receives only the question plus a list of relevant nodes (id, type, layer,
+   * cached responsibility if available) and the edges between them — never raw source.
+   */
+  async answerQuestion(context: QueryContext): Promise<string> {
+    const { question, relevantNodes, relevantEdges } = context
+
+    if (relevantNodes.length === 0) {
+      return "I couldn't find anything in the repository graph relevant to that question."
+    }
+
+    const nodeLines = relevantNodes.map(n => {
+      const layer = n.layer ? ` [${n.layer}]` : ''
+      const resp = n.responsibility ? ` — ${n.responsibility}` : ''
+      return `  - ${n.id} (type: ${n.type})${layer}${resp}`
+    })
+
+    const edgeLines = relevantEdges.map(e => `  - ${e.source} --${e.type}--> ${e.target}`)
+
+    const userContent = [
+      `Question: ${question}`,
+      '',
+      `Relevant nodes (${relevantNodes.length}):`,
+      ...nodeLines,
+      '',
+      `Relevant edges (${edgeLines.length}):`,
+      ...(edgeLines.length > 0 ? edgeLines : ['  (none)']),
+    ].join('\n')
+
+    return this._chat([
+      {
+        role: 'system',
+        content:
+          'You are a software architecture assistant answering questions about a codebase. ' +
+          'You are given structured graph metadata (file paths, symbol names, types, layers, ' +
+          'cached responsibility summaries, import/export relationships) — never raw source code. ' +
+          'Answer the question grounded only in this data. If the data is insufficient to answer ' +
+          'confidently, say so plainly rather than guessing.',
+      },
+      {
+        role: 'user',
+        content: userContent,
+      },
+    ])
   }
 
   // ─── Internal chat helper ────────────────────────────────────────────────────
@@ -203,14 +254,32 @@ export class WatsonxProvider implements LLMAdapter {
   private async _chat(
     messages: Array<{ role: 'system' | 'user'; content: string }>,
   ): Promise<string> {
-    const response = await this.client.textChat({
-      modelId: this.modelId,
-      projectId: this.projectId,
-      messages,
+    const timeout = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`WatsonxProvider: request timed out after ${CHAT_TIMEOUT_MS / 1000}s`)), CHAT_TIMEOUT_MS)
     })
 
+    const response = await Promise.race([
+      this.client.textChat({
+        modelId: this.modelId,
+        projectId: this.projectId,
+        messages,
+        // Reasoning-capable models (e.g. gpt-oss) spend tokens on hidden reasoning before the
+        // final answer; watsonx's own default (1024) is too low and truncates before any
+        // visible content is produced. Give enough headroom for reasoning + a full answer.
+        maxTokens: 4096,
+      }),
+      timeout,
+    ])
+
     const content = response.result?.choices?.[0]?.message?.content
-    if (typeof content !== 'string') {
+    if (typeof content !== 'string' || content.length === 0) {
+      const finishReason = response.result?.choices?.[0]?.finish_reason
+      if (finishReason === 'length') {
+        throw new Error(
+          'WatsonxProvider: response was truncated before producing an answer (finish_reason: length). ' +
+            'Try a shorter question/diff, or a non-reasoning model.',
+        )
+      }
       throw new Error(
         `WatsonxProvider: unexpected response shape — ${JSON.stringify(response.result)}`,
       )

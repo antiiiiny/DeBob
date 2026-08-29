@@ -1,6 +1,6 @@
 import type { Node, Graph } from '../graph/types.js'
 import type { ModuleContext } from '../llm/adapter.js'
-import type { GitFileStats } from '../persistence/interface.js'
+import type { GitFileStats, SemanticEnrichment } from '../persistence/interface.js'
 
 // ─── Graph Query Helpers ──────────────────────────────────────────────────────
 
@@ -117,4 +117,60 @@ export function buildModuleContext(node: Node, graph: Graph): ModuleContext {
     : undefined
 
   return { filePath, imports, exports, declarations, gitStats }
+}
+
+// ─── Relevant-Node Retrieval (for `debob explain`) ────────────────────────────
+
+const STOPWORDS = new Set([
+  'a', 'an', 'the', 'is', 'are', 'was', 'were', 'do', 'does', 'did', 'what', 'which',
+  'who', 'whom', 'where', 'when', 'why', 'how', 'of', 'in', 'on', 'to', 'for', 'and',
+  'or', 'this', 'that', 'it', 'file', 'files', 'code', 'repo', 'repository', 'about',
+])
+
+/** Split a free-form question into lowercase, deduplicated, stopword-free keywords. */
+function tokenize(question: string): string[] {
+  const words = question.toLowerCase().match(/[a-z0-9]+/g) ?? []
+  return [...new Set(words.filter(w => w.length > 1 && !STOPWORDS.has(w)))]
+}
+
+/**
+ * Score every node in the graph against a free-form question by keyword overlap, then
+ * return the top `limit` nodes with a non-zero score.
+ *
+ * Deliberately not embeddings-based: this is deterministic and explainable, matching
+ * DeBob's "every inference traceable to its origin" philosophy. Matches against the
+ * node's id/name/type/layer (weight 1 per keyword) and, when available, its cached
+ * `responsibility` enrichment text (weight 2 per keyword — natural-language summaries
+ * are a much stronger relevance signal than path/name substrings alone).
+ */
+export function findRelevantNodes(
+  graph: Graph,
+  question: string,
+  enrichments: SemanticEnrichment[] = [],
+  limit = 8,
+): Node[] {
+  const keywords = tokenize(question)
+  if (keywords.length === 0) return []
+
+  const responsibilityByNodeId = new Map<string, string>()
+  for (const e of enrichments) {
+    if (e.field === 'responsibility') responsibilityByNodeId.set(e.nodeId, e.value.toLowerCase())
+  }
+
+  const scored: Array<{ node: Node; score: number }> = []
+  for (const node of graph.nodes.values()) {
+    const haystack = `${node.id} ${node.name} ${node.type} ${node.layer ?? ''}`.toLowerCase()
+    const responsibility = responsibilityByNodeId.get(node.id)
+
+    let score = 0
+    for (const keyword of keywords) {
+      if (haystack.includes(keyword)) score += 1
+      if (responsibility?.includes(keyword)) score += 2
+    }
+
+    if (score > 0) scored.push({ node, score })
+  }
+
+  scored.sort((a, b) => b.score - a.score)
+  return scored.slice(0, limit).map(s => s.node)
 }

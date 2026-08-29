@@ -44,6 +44,19 @@ function inferLayer(filePath: string): ArchitecturalLayer | undefined {
 
 // ─── Module Resolution ────────────────────────────────────────────────────────
 
+/**
+ * ESM-TS convention: source files import relative specifiers with the *compiled* extension
+ * (`import './foo.js'`) even though the file on disk is `./foo.ts` — that's what this very
+ * codebase does throughout (`import { X } from '../scanner/index.js'`). Map each compiled
+ * extension to the source extensions it could actually resolve to, in probe order.
+ */
+const COMPILED_TO_SOURCE_EXT: Record<string, string[]> = {
+  '.js': ['.ts', '.tsx'],
+  '.jsx': ['.tsx'],
+  '.mjs': ['.mts'],
+  '.cjs': ['.cts'],
+}
+
 function resolveImportTarget(
   specifier: string,
   importingFilePath: string,
@@ -54,10 +67,26 @@ function resolveImportTarget(
     const resolved = resolve(importingDir, specifier)
     let rel = relative(repoRoot, resolved).replace(/\\/g, '/')
     rel = rel.split('?')[0]!.split('#')[0]!
-    if (!extname(rel)) {
-      for (const ext of ['.ts', '.tsx', '.js', '.jsx', '.mjs', '/index.ts', '/index.js']) {
-        if (existsSync(resolve(repoRoot, rel + ext))) {
-          return { id: rel + ext, isPackage: false }
+    const ext = extname(rel)
+
+    // `./foo.js` style specifier: prefer a literal .js file if one really exists (plain-JS
+    // projects), otherwise remap to the .ts/.tsx source that actually produced it — without
+    // this, every relative import in an ESM-TS codebase resolves to a disconnected phantom
+    // stub node instead of the real, already-analyzed file node.
+    if (ext && COMPILED_TO_SOURCE_EXT[ext]) {
+      if (existsSync(resolve(repoRoot, rel))) return { id: rel, isPackage: false }
+      const base = rel.slice(0, -ext.length)
+      for (const sourceExt of COMPILED_TO_SOURCE_EXT[ext]) {
+        if (existsSync(resolve(repoRoot, base + sourceExt))) {
+          return { id: base + sourceExt, isPackage: false }
+        }
+      }
+    }
+
+    if (!ext) {
+      for (const probeExt of ['.ts', '.tsx', '.js', '.jsx', '.mjs', '/index.ts', '/index.js']) {
+        if (existsSync(resolve(repoRoot, rel + probeExt))) {
+          return { id: rel + probeExt, isPackage: false }
         }
       }
     }

@@ -11,10 +11,12 @@ export type { ScannedFile } from './types.js'
 
 const TYPESCRIPT_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts'])
 const JAVASCRIPT_EXTENSIONS = new Set(['.js', '.jsx', '.mjs', '.cjs'])
+const PYTHON_EXTENSIONS = new Set(['.py'])
 
 function detectLanguage(ext: string): ScannedFile['language'] {
   if (TYPESCRIPT_EXTENSIONS.has(ext)) return 'typescript'
   if (JAVASCRIPT_EXTENSIONS.has(ext)) return 'javascript'
+  if (PYTHON_EXTENSIONS.has(ext)) return 'python'
   return 'unknown'
 }
 
@@ -55,6 +57,8 @@ const TEXT_EXTENSIONS = new Set([
   // TypeScript / JavaScript
   '.ts', '.tsx', '.mts', '.cts',
   '.js', '.jsx', '.mjs', '.cjs',
+  // Python
+  '.py',
   // Data / config
   '.json', '.jsonc', '.yaml', '.yml', '.toml',
   // Markup / docs

@@ -43,3 +43,4 @@ export type {
 // Engine
 export type { InitResult, InitOptions, UpdateResult, UpdateOptions } from '../engine/index.js'
 export type { ReviewResult, ReviewOptions } from '../engine/review.js'
+export type { ExplainResult, ExplainOptions } from '../engine/explain.js'
