@@ -4,13 +4,13 @@ This file provides guidance to agents when working with code in this repository.
 
 ## Implementation Sequence
 
-All original sub-tasks 1–11 are **complete**. The active work is sub-tasks A–E from `debob-next-plan.md`:
+All original sub-tasks 1–11 are **complete**. Sub-tasks A–E from `debob-next-plan.md` are also **all complete**:
 ```
 A  runUpdate + debob update CLI     → complete
 B  Layer propagation                → complete
 C  Bob skill (debob-query)          → complete
-D  debob review                     → pending
-E  Rules/AGENTS.md cleanup          → pending
+D  debob review                     → complete
+E  Rules/AGENTS.md cleanup          → complete
 ```
 
 See `debob-impl-plan.md` for status and specs.

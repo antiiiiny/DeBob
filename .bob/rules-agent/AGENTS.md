@@ -34,4 +34,6 @@ Write `_test_<n>.mjs` at repo root, run with `npx tsx _test_<n>.mjs`, delete aft
 - Do NOT add `better-sqlite3` or native `tree-sitter` (Windows incompatibility)
 - Do NOT store raw emails, API keys, or secrets in `.debob/`
 - Do NOT send full source file contents to the LLM — only `ModuleContext` slices
-- Do NOT implement `debob review`, `debob update`, or `debob explain` yet
+- Do NOT implement `debob explain` — this is out of scope for V1
+- Do NOT use the deprecated `text/generation` REST endpoint — use `WatsonxProvider` (SDK chat API)
+- Do NOT read `WATSONX_ENDPOINT` — the correct env var is `WATSONX_URL`

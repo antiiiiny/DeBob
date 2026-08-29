@@ -23,7 +23,7 @@
 
 ## Sub-Task A — Incremental Update (`debob update`)
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 `debob init` currently re-runs the full pipeline every time — re-scans all files, re-runs
@@ -79,7 +79,7 @@ only re-processes files that have actually changed.
 
 ## Sub-Task B — Layer Propagation
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 After `debob init --semantic`, the `semantic_enrichments` table holds `field="layer"` rows
@@ -114,7 +114,7 @@ Fix: after the semantic enrichment loop in `runInit` (and `runUpdate`), read bac
 
 ## Sub-Task C — Bob Skill: Graph Query from Chat
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 The core token-saving value of DeBob is that Bob can query the pre-built graph to
@@ -164,7 +164,7 @@ queries the graph (cheap, structured, grounded in static analysis + LLM enrichme
 
 ## Sub-Task D — `debob review` (Diff Impact Analysis)
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 `debob review` is stubbed but the full type infrastructure exists: `DiffContext`,
@@ -214,7 +214,7 @@ structured impact analysis.
 
 ## Sub-Task E — Update `.bob/rules-*/AGENTS.md` Skill Files
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 All three `.bob/rules-*/AGENTS.md` files are stale. They reference sub-tasks 7–11 as

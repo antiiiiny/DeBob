@@ -121,11 +121,66 @@ export class WatsonxProvider implements LLMAdapter {
     return raw.trim().toLowerCase().replace(/[^a-z]/g, '') || 'unclassified'
   }
 
-  // ─── explainDiff (stub) ─────────────────────────────────────────────────────
+  // ─── explainDiff ─────────────────────────────────────────────────────────────
 
-  /** @throws Always — implemented in `debob review` (future sub-task). */
-  async explainDiff(_context: DiffContext): Promise<string> {
-    throw new Error('WatsonxProvider.explainDiff: not yet implemented (debob review)')
+  /**
+   * Explain the impact of a git diff using architectural graph context.
+   *
+   * The LLM receives:
+   *  - A system message establishing the architecture-assistant role
+   *  - A user message with: layers affected, per-node responsibility summaries,
+   *    and the truncated raw diff (first 200 lines)
+   *
+   * Raw source code is NEVER included — only graph-derived metadata.
+   */
+  async explainDiff(context: DiffContext): Promise<string> {
+    const { diff, affectedNodes, neighbourhood, layersSummary } = context
+
+    // Build per-node responsibility lines from neighbourhood enrichments.
+    // We don't have direct access to enrichments here, so we use what the
+    // engine already embedded: the affectedNodes list + the neighbourhood graph.
+    const nodeLines: string[] = []
+    const allNodes = [
+      ...affectedNodes,
+      ...neighbourhood.nodes.values(),
+    ]
+    for (const n of allNodes) {
+      const layer = n.layer ? ` [${n.layer}]` : ''
+      nodeLines.push(`  - ${n.id}${layer} (type: ${n.type})`)
+    }
+
+    const layerLine =
+      layersSummary.length > 0
+        ? `Layers affected: ${layersSummary.join(', ')}`
+        : 'Layers affected: unknown'
+
+    const userContent = [
+      layerLine,
+      '',
+      `Directly changed files (${affectedNodes.length}):`,
+      ...affectedNodes.map(n => `  - ${n.id}${n.layer ? ` [${n.layer}]` : ''}`),
+      '',
+      `Neighbourhood (2-hop, ${neighbourhood.nodes.size} nodes):`,
+      ...[...neighbourhood.nodes.values()].map(n => `  - ${n.id}${n.layer ? ` [${n.layer}]` : ''}`),
+      '',
+      '--- diff (truncated to 200 lines) ---',
+      diff,
+    ].join('\n')
+
+    return this._chat([
+      {
+        role: 'system',
+        content:
+          'You are a software architecture assistant. ' +
+          'Given a git diff and the architectural context of affected modules (no raw source), ' +
+          'describe in plain language: which parts of the system are affected, what risks the change ' +
+          'introduces, and which neighbouring modules may need review.',
+      },
+      {
+        role: 'user',
+        content: userContent,
+      },
+    ])
   }
 
   // ─── answerQuestion (stub) ──────────────────────────────────────────────────

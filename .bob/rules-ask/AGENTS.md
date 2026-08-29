@@ -26,7 +26,7 @@ Activate this skill when answering architecture, dependency, or file-responsibil
 
 **All sub-tasks 1–11 are complete.** Sub-tasks A–E from `debob-next-plan.md` extend the system.
 
-**The CLI `bin/debob.ts`** implements: `init`, `update`, `visualise`, and `review` (stub).
+**The CLI `bin/debob.ts`** implements: `init`, `update`, `visualise`, and `review` (all complete — no stubs remaining).
 
 ## LLM Design Constraint
 

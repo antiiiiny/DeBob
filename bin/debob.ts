@@ -31,6 +31,7 @@ import chalk from 'chalk'
 import ora from 'ora'
 import open from 'open'
 import { runInit, runUpdate } from '../src/engine/index.js'
+import { runReview } from '../src/engine/review.js'
 import { createLLMAdapter } from '../src/llm/index.js'
 import type { LLMAdapter } from '../src/llm/adapter.js'
 import { startVisualiserServer } from '../src/visualiser/server.js'
@@ -310,13 +311,86 @@ program
     }
   })
 
-// ─── review command (stub) ──────────────────────────────────────────────────
+// ─── review command ────────────────────────────────────────────────────────────
 
 program
   .command('review')
-  .description('Review a diff against the repository graph (coming soon)')
-  .action(() => {
-    console.log(chalk.yellow('debob review — coming soon'))
+  .description('Explain the impact of a git diff against the repository graph')
+  .option('--repo <path>', 'Path to the repository root', process.cwd())
+  .option('--base <ref>', 'Git ref to diff against (default: uncommitted changes vs HEAD)')
+  .option('--verbose', 'Show detailed progress output')
+  .action(async (opts: { repo: string; base?: string; verbose?: boolean }) => {
+    try {
+      const repoRoot = opts.repo
+      const verbose = opts.verbose ?? false
+
+      // ─── Resolve LLM adapter (required for review) ─────────────────────────
+
+      const apiKey = process.env['WATSONX_API_KEY']
+      const projectId = process.env['WATSONX_PROJECT_ID']
+      const url = process.env['WATSONX_URL']
+      const modelId = process.env['WATSONX_MODEL_ID']
+
+      if (!apiKey || !projectId || !url || !modelId) {
+        console.error(
+          chalk.red(
+            '\n✖  debob review requires WATSONX_API_KEY, WATSONX_PROJECT_ID, WATSONX_URL, and WATSONX_MODEL_ID.\n' +
+            '   Set them in a .env file at the repository root.',
+          ),
+        )
+        process.exit(1)
+      }
+
+      let llm: LLMAdapter
+      try {
+        llm = createLLMAdapter('watsonx', { provider: 'watsonx', apiKey, projectId, url, modelId })
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(chalk.red(`\n✖  LLM adapter could not be created: ${msg}`))
+        process.exit(1)
+      }
+
+      // ─── Run review ────────────────────────────────────────────────────────
+
+      const spinner = ora('Analyzing diff against repository graph…').start()
+
+      let result
+      try {
+        result = await runReview(repoRoot, { base: opts.base, verbose, llm })
+        spinner.succeed(chalk.green('Review complete'))
+      } catch (err) {
+        spinner.fail(chalk.red('Review failed'))
+        throw err
+      }
+
+      // ─── Render output ─────────────────────────────────────────────────────
+
+      console.log()
+      console.log(chalk.bold('─── DeBob Review ─────────────────────────────────────────'))
+      console.log()
+      console.log(chalk.cyan('  Affected files    :'), result.affectedFiles.length)
+      for (const f of result.affectedFiles) {
+        console.log(`    ${chalk.yellow(f)}`)
+      }
+      console.log()
+      console.log(chalk.cyan('  Layers touched    :'), result.affectedLayers.join(', ') || 'none')
+      console.log(chalk.cyan('  Neighbourhood     :'), result.neighbourhoodSize, 'nodes')
+      console.log()
+      console.log(chalk.bold('  Impact analysis:'))
+      console.log()
+      for (const line of result.explanation.split('\n')) {
+        console.log('  ' + line)
+      }
+      console.log()
+      console.log(chalk.bold('─────────────────────────────────────────────────────────'))
+      console.log()
+
+      process.exit(0)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(chalk.red(`\n✖  ${msg}`))
+      process.exit(1)
+    }
   })
 
 // ─── Parse ────────────────────────────────────────────────────────────────────

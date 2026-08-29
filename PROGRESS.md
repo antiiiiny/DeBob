@@ -89,7 +89,8 @@ bin/
                                          rich summary output, error handling, exit codes
                                        visualise (alias: viz): --repo/--port, spins up
                                          local HTTP server, auto-opens browser via open
-                                       review: stub (coming soon)
+                                       update: --repo/--semantic/--verbose, incremental re-analysis
+                                       review: --repo/--base/--verbose, diff impact analysis via LLM
 
 src/
   types/
@@ -141,17 +142,22 @@ src/
       watsonx.ts                    ← WatsonxProvider: @ibm-cloud/watsonx-ai SDK + IamAuthenticator
                                        textChat() chat API (NOT deprecated text/generation REST)
                                        summarizeModule, classifyLayer, buildModulePrompt
-                                       explainDiff/answerQuestion stubs (debob review/explain)
+                                       explainDiff: real implementation (layers + neighbourhood context + diff)
+                                       answerQuestion: stub (debob explain — out of scope V1)
                                        reads WATSONX_URL + WATSONX_MODEL_ID (not ENDPOINT)
 
-  engine/
-    index.ts                        ← runInit(repoRoot, options): Promise<InitResult>
-                                       runUpdate(repoRoot, options): Promise<UpdateResult>
-                                       InitOptions, InitResult, UpdateOptions, UpdateResult types
-                                       analyzer registry (ext→analyzer Map)
-                                       pipeline: scan → analyze → git → buildGraph → persist → semantic? → manifest
-                                       incremental helpers: makeFileNode, mergeAnalysisResults, markHotFiles,
-                                         mergeGitFileStats, removeUnreferencedPackages, applyFileMetadata
+ engine/
+   index.ts                        ← runInit(repoRoot, options): Promise<InitResult>
+                                      runUpdate(repoRoot, options): Promise<UpdateResult>
+                                      InitOptions, InitResult, UpdateOptions, UpdateResult types
+                                      analyzer registry (ext→analyzer Map)
+                                      pipeline: scan → analyze → git → buildGraph → persist → semantic? → manifest
+                                      incremental helpers: makeFileNode, mergeAnalysisResults, markHotFiles,
+                                        mergeGitFileStats, removeUnreferencedPackages, applyFileMetadata
+   review.ts                       ← runReview(repoRoot, options): Promise<ReviewResult>
+                                      ReviewOptions, ReviewResult types
+                                      reads git diff → maps to graph nodes → 2-hop neighbourhood
+                                      reads semantic_enrichments for context → calls llm.explainDiff()
 
   query/
     index.ts                        ← getNodeEdges, getFileImports, getFileExports, getNodeNeighbours
@@ -222,14 +228,21 @@ adapter.close() // saves to disk
 
 ## All Sub-Tasks Complete ✅
 
-All 11 sub-tasks are implemented and verified. The full DeBob system is operational:
+All 11 original sub-tasks + A–E next-phase sub-tasks are implemented and verified.
+The full DeBob system is operational:
 
 - `npx debob init` — scans any Git repo, builds `.debob/context.db`, zero LLM calls
 - `npx debob init --semantic` — additionally enriches the graph via watsonx.ai SDK
   - Reads `WATSONX_API_KEY`, `WATSONX_PROJECT_ID`, `WATSONX_URL`, `WATSONX_MODEL_ID` from `.env`
   - Uses `@ibm-cloud/watsonx-ai` SDK chat API via `WatsonxProvider`
   - Writes `responsibility` + `layer` fields to `semantic_enrichments` table per file node
+- `npx debob update` — incrementally re-analyzes only changed files; updates the graph in-place
+- `npx debob update --semantic` — additionally enriches newly-analyzed nodes via LLM
+- `npx debob review` — explains the impact of a git diff against the architectural graph
+  - Requires `WATSONX_*` credentials; reads `git diff HEAD` or `--base <ref>`
+  - Output: affected files, layers touched, 2-hop neighbourhood, LLM impact explanation
 - `npx debob visualise` — opens interactive graph in browser (Cytoscape.js, local HTTP server)
+- `.bob/skills/debob-query/SKILL.md` — Bob skill: query graph from chat without reading source files
 - `docs/architecture.md` — canonical reference for contributors and AI agents
 - `README.md` — quick-start, commands, output summary, contributing guide
 
@@ -276,7 +289,7 @@ node dist/debob.js     # run compiled output
 - Do NOT store raw author emails, API keys, tokens, or `.env` values in `.debob/`
 - Do NOT send full source files to the LLM — only `ModuleContext` slices from query layer
 - Do NOT add per-module JSON files to `.debob/` — SQLite only in V1
-- Do NOT implement `debob review`, `debob update`, `debob explain` yet — out of scope
+- Do NOT implement `debob explain` — out of scope for V1
 - Do NOT call `adapter.close()` and forget — sql.js won't persist without it
 - Do NOT use the deprecated `text/generation` REST endpoint — use `WatsonxProvider` (SDK chat API)
 - Do NOT read `WATSONX_ENDPOINT` — the correct env var is `WATSONX_URL`

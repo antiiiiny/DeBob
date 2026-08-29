@@ -172,7 +172,7 @@ mechanism: graph queries + cached enrichments replace bulk file reads.
 
 ## Sub-Task D — `debob review` (Diff Impact Analysis)
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 Replace the `debob review` stub with a real implementation. Read the current git diff,
@@ -222,7 +222,7 @@ call `llm.explainDiff()`, and print a structured impact analysis.
 
 ## Sub-Task E — Update `.bob/rules-*/AGENTS.md` Files
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent:**
 The three `.bob/rules-*/AGENTS.md` files are stale — they reference deprecated sub-task
