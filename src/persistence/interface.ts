@@ -66,10 +66,24 @@ export interface PersistenceAdapter {
   saveFileCache(entries: FileCacheEntry[]): void
   /** Upsert semantic enrichments by (nodeId, field). */
   saveSemanticEnrichments(enrichments: SemanticEnrichment[]): void
+  /** Delete every graph node declared by one of the supplied files. */
+  deleteNodesByFilePaths(filePaths: string[]): void
+  /** Delete edges whose source node is one of the supplied ids. */
+  deleteEdgesBySourceIds(nodeIds: string[]): void
+  /** Delete edges that reference one of the supplied node ids at either endpoint. */
+  deleteEdgesByNodeIds(nodeIds: string[]): void
+  /** Delete file-cache rows for files no longer present in the repository. */
+  deleteFileCacheEntries(filePaths: string[]): void
+  /** Delete LLM outputs for nodes that are about to be re-analyzed or removed. */
+  deleteSemanticEnrichments(nodeIds: string[]): void
   /** Read the full graph from storage. */
   readGraph(): Graph
   /** Read all file cache entries (used by engine to determine what needs re-analysis). */
   readFileCacheEntries(): FileCacheEntry[]
+  /** Read the persisted per-file Git statistics. */
+  readGitFileStats(): GitFileStats[]
+  /** Read LLM enrichments, optionally limited to a set of node ids. */
+  readSemanticEnrichments(nodeIds?: string[]): SemanticEnrichment[]
   /** Close and release database resources. */
   close(): void
 }

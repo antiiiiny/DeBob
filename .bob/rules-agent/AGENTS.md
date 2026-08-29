@@ -5,7 +5,9 @@ This file provides guidance to agents when working with code in this repository.
 ## Before Writing Any Code
 
 - Run `npm run typecheck` and confirm it passes. All sub-tasks must leave typecheck green.
-- Read `PROGRESS.md` to see which sub-tasks are done and what's next. `debob-plan.md` has the full spec for each pending sub-task.
+- Read `PROGRESS.md` to see which sub-tasks are done and what's next.
+- `debob-impl-plan.md` tracks the active A–E sub-tasks. `debob-next-plan.md` has the full specs.
+- Use `.bob/skills/debob-query/SKILL.md` to query the knowledge graph from chat when needed.
 
 ## Non-Obvious Coding Rules
 

@@ -41,4 +41,4 @@ export type {
 } from '../llm/adapter.js'
 
 // Engine
-export type { InitResult, InitOptions } from '../engine/index.js'
+export type { InitResult, InitOptions, UpdateResult, UpdateOptions } from '../engine/index.js'

@@ -30,7 +30,7 @@ try {
 import chalk from 'chalk'
 import ora from 'ora'
 import open from 'open'
-import { runInit } from '../src/engine/index.js'
+import { runInit, runUpdate } from '../src/engine/index.js'
 import { createLLMAdapter } from '../src/llm/index.js'
 import type { LLMAdapter } from '../src/llm/adapter.js'
 import { startVisualiserServer } from '../src/visualiser/server.js'
@@ -214,6 +214,98 @@ program
       spinner.fail(chalk.red('Could not start graph visualiser'))
       const msg = err instanceof Error ? err.message : String(err)
       console.error(chalk.red('\n✖  ' + msg))
+      process.exit(1)
+    }
+  })
+
+// ─── update command ────────────────────────────────────────────────────────
+
+program
+  .command('update')
+  .description('Incrementally re-analyze changed files and update the knowledge graph')
+  .option('--repo <path>', 'Path to the repository root', process.cwd())
+  .option('--semantic', 'Run LLM semantic enrichment on re-analyzed files')
+  .option('--verbose', 'Show detailed progress output')
+  .action(async (opts: { repo: string; semantic?: boolean; verbose?: boolean }) => {
+    try {
+      const repoRoot = opts.repo
+      const semantic = opts.semantic ?? false
+      const verbose = opts.verbose ?? false
+
+      // ─── Resolve LLM adapter (--semantic) ──────────────────────────────────
+
+      let llm: LLMAdapter | undefined
+      if (semantic) {
+        const apiKey = process.env['WATSONX_API_KEY']
+        const projectId = process.env['WATSONX_PROJECT_ID']
+        const url = process.env['WATSONX_URL']
+        const modelId = process.env['WATSONX_MODEL_ID']
+
+        if (!apiKey || !projectId || !url || !modelId) {
+          console.warn(
+            chalk.yellow(
+              '⚠  --semantic was set but WATSONX_API_KEY, WATSONX_PROJECT_ID, WATSONX_URL, or WATSONX_MODEL_ID is missing — skipping LLM enrichment.',
+            ),
+          )
+        } else {
+          try {
+            llm = createLLMAdapter('watsonx', { provider: 'watsonx', apiKey, projectId, url, modelId })
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            console.warn(chalk.yellow(`⚠  LLM adapter could not be created: ${msg} — skipping LLM enrichment.`))
+          }
+        }
+      }
+
+      // ─── Run engine ────────────────────────────────────────────────────────
+
+      const spinner = ora('Updating DeBob graph…').start()
+
+      let result
+      try {
+        result = await runUpdate(repoRoot, {
+          semantic: semantic && llm !== undefined,
+          llm,
+          verbose,
+        })
+        spinner.succeed(chalk.green('Incremental update complete'))
+      } catch (err) {
+        spinner.fail(chalk.red('Update failed'))
+        throw err
+      }
+
+      // ─── Render summary ────────────────────────────────────────────────────
+
+      console.log()
+      console.log(chalk.bold('─── DeBob Update Summary ─────────────────────────────────'))
+      console.log()
+      console.log(chalk.cyan('  Files re-analyzed :'), result.reanalyzedFiles.length)
+      console.log(chalk.cyan('  Files skipped     :'), result.skippedFiles.length)
+      console.log(chalk.cyan('  Nodes added       :'), result.addedNodes)
+      console.log(chalk.cyan('  Nodes removed     :'), result.removedNodes)
+      console.log(chalk.cyan('  Nodes updated     :'), result.updatedNodes)
+      console.log(chalk.cyan('  Edges added       :'), result.addedEdges)
+      console.log(chalk.cyan('  Edges removed     :'), result.removedEdges)
+      if (result.reanalyzedFiles.length > 0 && verbose) {
+        console.log()
+        console.log(chalk.bold('  Re-analyzed files:'))
+        for (const f of result.reanalyzedFiles.slice(0, 10)) {
+          console.log(`    ${chalk.yellow(f)}`)
+        }
+        if (result.reanalyzedFiles.length > 10) {
+          console.log(chalk.gray(`    … +${result.reanalyzedFiles.length - 10} more`))
+        }
+      }
+      console.log()
+      console.log(chalk.cyan('  Database :'), chalk.underline(result.dbPath))
+      console.log()
+      console.log(chalk.bold('─────────────────────────────────────────────────────────'))
+      console.log()
+
+      process.exit(0)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(chalk.red(`\n✖  ${msg}`))
       process.exit(1)
     }
   })

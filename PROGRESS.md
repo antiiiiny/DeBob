@@ -146,8 +146,12 @@ src/
 
   engine/
     index.ts                        ← runInit(repoRoot, options): Promise<InitResult>
-                                       InitOptions, InitResult types; analyzer registry (ext→analyzer Map)
+                                       runUpdate(repoRoot, options): Promise<UpdateResult>
+                                       InitOptions, InitResult, UpdateOptions, UpdateResult types
+                                       analyzer registry (ext→analyzer Map)
                                        pipeline: scan → analyze → git → buildGraph → persist → semantic? → manifest
+                                       incremental helpers: makeFileNode, mergeAnalysisResults, markHotFiles,
+                                         mergeGitFileStats, removeUnreferencedPackages, applyFileMetadata
 
   query/
     index.ts                        ← getNodeEdges, getFileImports, getFileExports, getNodeNeighbours

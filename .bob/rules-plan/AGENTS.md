@@ -2,16 +2,23 @@
 
 This file provides guidance to agents when working with code in this repository.
 
-## Implementation Sequence (Non-Obvious)
+## Implementation Sequence
 
-Sub-tasks 7–11 must follow this order — dependencies are real, not advisory:
+All original sub-tasks 1–11 are **complete**. The active work is sub-tasks A–E from `debob-next-plan.md`:
 ```
-7 Graph Builder      → depends on scanner (4), analyzer (5), git (6)
-8 Engine             → depends on persistence (3), scanner (4), analyzer (5), git (6), builder (7)
-9 CLI               → depends on engine (8)
-10 LLM Layer        → depends on persistence (3), graph types (2), query (sub-part of 10)
-11 Docs             → depends on all
+A  runUpdate + debob update CLI     → complete
+B  Layer propagation                → complete
+C  Bob skill (debob-query)          → complete
+D  debob review                     → pending
+E  Rules/AGENTS.md cleanup          → pending
 ```
+
+See `debob-impl-plan.md` for status and specs.
+
+## DeBob Graph Query Skill
+
+**`.bob/skills/debob-query/SKILL.md`** teaches Bob how to query `.debob/context.db` to answer
+architecture questions without reading source files. Activate it when planning graph-related work.
 
 ## Architectural Constraints That Affect Design Decisions
 

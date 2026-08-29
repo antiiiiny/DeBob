@@ -24,6 +24,8 @@ export interface Manifest {
   edgeCount: number
   fileCount: number
   commitCount: number
+  /** Git HEAD observed when this graph was last structurally updated. */
+  headCommit?: string
   semantic: boolean
 }
 
@@ -260,6 +262,54 @@ export class SqlitePersistenceAdapter implements PersistenceAdapter {
     stmt.free()
   }
 
+  // ─── Incremental-update cleanup ───────────────────────────────────────────
+
+  deleteNodesByFilePaths(filePaths: string[]): void {
+    if (filePaths.length === 0) return
+    const stmt = this.db.prepare(
+      `DELETE FROM nodes WHERE file_path IN (${filePaths.map(() => '?').join(', ')})`,
+    )
+    stmt.run(filePaths)
+    stmt.free()
+  }
+
+  deleteEdgesBySourceIds(nodeIds: string[]): void {
+    if (nodeIds.length === 0) return
+    const stmt = this.db.prepare(
+      `DELETE FROM edges WHERE source IN (${nodeIds.map(() => '?').join(', ')})`,
+    )
+    stmt.run(nodeIds)
+    stmt.free()
+  }
+
+  deleteEdgesByNodeIds(nodeIds: string[]): void {
+    if (nodeIds.length === 0) return
+    const placeholders = nodeIds.map(() => '?').join(', ')
+    const stmt = this.db.prepare(
+      `DELETE FROM edges WHERE source IN (${placeholders}) OR target IN (${placeholders})`,
+    )
+    stmt.run([...nodeIds, ...nodeIds])
+    stmt.free()
+  }
+
+  deleteFileCacheEntries(filePaths: string[]): void {
+    if (filePaths.length === 0) return
+    const stmt = this.db.prepare(
+      `DELETE FROM file_cache WHERE file_path IN (${filePaths.map(() => '?').join(', ')})`,
+    )
+    stmt.run(filePaths)
+    stmt.free()
+  }
+
+  deleteSemanticEnrichments(nodeIds: string[]): void {
+    if (nodeIds.length === 0) return
+    const stmt = this.db.prepare(
+      `DELETE FROM semantic_enrichments WHERE node_id IN (${nodeIds.map(() => '?').join(', ')})`,
+    )
+    stmt.run(nodeIds)
+    stmt.free()
+  }
+
   // ── Read Graph ────────────────────────────────────────────────────────────
 
   readGraph(): Graph {
@@ -329,6 +379,47 @@ export class SqlitePersistenceAdapter implements PersistenceAdapter {
     }
     stmt.free()
     return entries
+  }
+
+  readGitFileStats(): GitFileStats[] {
+    const stats: GitFileStats[] = []
+    const stmt = this.db.prepare('SELECT * FROM git_file_stats')
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as Record<string, unknown>
+      stats.push({
+        filePath: row['file_path'] as string,
+        commitCount: Number(row['commit_count']),
+        churnScore: Number(row['churn_score']),
+        authorCount: Number(row['author_count']),
+        lastModifiedAt: row['last_modified_at'] as string,
+      })
+    }
+    stmt.free()
+    return stats
+  }
+
+  readSemanticEnrichments(nodeIds?: string[]): SemanticEnrichment[] {
+    const enrichments: SemanticEnrichment[] = []
+    const hasNodeFilter = nodeIds !== undefined && nodeIds.length > 0
+    const stmt = this.db.prepare(
+      hasNodeFilter
+        ? `SELECT * FROM semantic_enrichments WHERE node_id IN (${nodeIds!.map(() => '?').join(', ')})`
+        : 'SELECT * FROM semantic_enrichments',
+    )
+    if (hasNodeFilter) stmt.bind(nodeIds!)
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as Record<string, unknown>
+      enrichments.push({
+        nodeId: row['node_id'] as string,
+        field: row['field'] as string,
+        value: row['value'] as string,
+        llmProvider: row['llm_provider'] as string,
+        modelId: row['model_id'] as string,
+        createdAt: row['created_at'] as string,
+      })
+    }
+    stmt.free()
+    return enrichments
   }
 
   // ── Close ─────────────────────────────────────────────────────────────────

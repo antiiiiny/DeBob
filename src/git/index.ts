@@ -9,6 +9,11 @@ export type { GitCommit, GitFileStats, GitMetadata } from '../persistence/interf
 export interface GitExtractOptions {
   /** Maximum number of commits to analyze. Default: 500. */
   maxCommits?: number
+  /**
+   * Optional exclusive lower-bound commit. When set, only commits reachable from
+   * HEAD after this commit are returned. Used by `debob update`.
+   */
+  fromCommit?: string
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -62,6 +67,7 @@ export async function extractGitMetadata(
   try {
     rawLog = await git.raw([
       'log',
+      ...(options.fromCommit ? [`${options.fromCommit}..HEAD`] : []),
       `--max-count=${maxCommits}`,
       '--name-only',
       '--format=COMMIT_START%n%H%n%an%n%ae%n%aI%n%s',

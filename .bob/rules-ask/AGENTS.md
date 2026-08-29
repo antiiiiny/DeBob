@@ -5,9 +5,16 @@ This file provides guidance to agents when working with code in this repository.
 ## Key Documentation Files
 
 - `PROGRESS.md` — primary handoff doc; current sub-task status + complete file inventory + implementation notes
-- `debob-plan.md` — full architecture plan + detailed spec for every sub-task (11 total, 6 done)
+- `debob-plan.md` — original architecture plan (sub-tasks 1–11, all complete)
+- `debob-next-plan.md` — next-phase spec (sub-tasks A–E)
+- `debob-impl-plan.md` — implementation plan tracking A–E progress
 - `src/persistence/schema.ts` — SQLite schema (6 tables) with comments explaining each
 - `src/graph/types.ts` — all graph type definitions with explanatory comments
+
+## DeBob Graph Query Skill
+
+**Use `.bob/skills/debob-query/SKILL.md`** to query the knowledge graph from chat.
+Activate this skill when answering architecture, dependency, or file-responsibility questions.
 
 ## Non-Obvious Architecture Facts
 
@@ -15,16 +22,17 @@ This file provides guidance to agents when working with code in this repository.
 
 **`semantic_enrichments` table is separate from `nodes` by design** — LLM-inferred data is never mixed into the static `nodes` table. Every piece of LLM output is tagged with `llmProvider` + `modelId` for full provenance tracing.
 
-**`file_cache` table drives incremental updates** — on a future `debob update`, any file whose `contentHash` or `lastGitCommit` differs is re-analyzed. Unchanged files are skipped.
+**`file_cache` table drives incremental updates** — `debob update` re-analyzes only files whose `contentHash`, `analyzerVersion`, or `schemaVersion` has changed. Unchanged files are skipped.
 
-**`src/engine/`, `src/query/`, `src/llm/providers/`, `docs/`** are intentionally empty — pending sub-tasks 7–11. Not missing, just not yet implemented.
+**All sub-tasks 1–11 are complete.** Sub-tasks A–E from `debob-next-plan.md` extend the system.
 
-**The CLI `bin/debob.ts` is a placeholder** — `debob init` prints a stub message. Full implementation is Sub-Task 9.
+**The CLI `bin/debob.ts`** implements: `init`, `update`, `visualise`, and `review` (stub).
 
 ## LLM Design Constraint
 
-The LLM never receives raw source files. The context builder (not yet implemented: `src/llm/context.ts`) assembles `ModuleContext` slices from graph queries. This is an architectural invariant, not a preference.
+The LLM never receives raw source files. `buildModuleContext()` in `src/query/index.ts` assembles `ModuleContext` slices from graph queries. This is an architectural invariant, not a preference.
 
 ## IBM watsonx Provider
 
-V1 LLM provider is IBM watsonx REST API. Credentials come from env vars only: `WATSONX_API_KEY`, `WATSONX_PROJECT_ID`, `WATSONX_ENDPOINT`. Implementation is pending (Sub-Task 10).
+LLM provider is IBM watsonx.ai SDK (`@ibm-cloud/watsonx-ai`). Class: `WatsonxProvider`.
+Credentials: `WATSONX_API_KEY`, `WATSONX_PROJECT_ID`, `WATSONX_URL` (not `WATSONX_ENDPOINT`), `WATSONX_MODEL_ID`.
