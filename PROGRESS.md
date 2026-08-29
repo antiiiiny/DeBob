@@ -22,6 +22,110 @@ The LLM **never receives the full repository**. The graph + query layer assemble
 
 ---
 
+## Graph Truth + watsonx Surfacing (Sub-Task K) — ✅ done
+
+Measuring the graph after the visualiser fix showed the real problem was *what was in it*, not
+how it was drawn. Before this work, against this repo:
+
+```
+nodes 162   file 42 | function 67 | interface 29 | package 20 | class 4
+edges 117   imports 100 | exports 12 | implements 4 | extends 1
+orphans     108 of 162 (67%) had zero edges
+layers      120 of 162 (74%) unclassified
+```
+
+**Root causes found (all now fixed):**
+
+1. **11 of 15 `EdgeType` values were never emitted by anything.** The graph was a file-import
+   graph with 96 symbol nodes floating decoratively beside it. There was no `declares` type at
+   all and no call extraction, so a plain `export function foo() {}` had no edge to anything.
+2. **The TS analyzer never handled `arrow_function`, `variable_declarator`, `method_definition`
+   or `call_expression`.** `export const Foo = () => {}` produced **no node at all** — the
+   dominant modern style — class methods didn't exist, and no `variable` node was ever created
+   despite the type, legend entry and filter existing. Sub-Task 5's own todo item #6 specified
+   arrow functions and was marked done without being implemented. This repo's self-graph hid it
+   because debob happens to use no arrow exports.
+3. **`extends`/`implements` targeted bare source text**, not node ids, so `makeStubNode` invented
+   a `file` node named after each TypeScript type. That's why the graph had 42 file nodes against
+   a `fileCount` of 38.
+4. **`buildGraph` silently discarded every file node's inferred layer.** Step 1 seeds a bare
+   file node per scanned file with no layer; Step 2's "first writer wins" then dropped the
+   analyzer's file node — which carried `inferLayer`'s result — on the id collision. A large
+   part of the 74% unclassified rate. **Found by a unit test**, not by reading the code.
+5. **`debob init` was not authoritative.** It upserts nodes and never deletes, so nodes an
+   earlier run produced but a later one doesn't (renamed symbols, phantoms from a since-fixed
+   analyzer bug) survived forever with nothing to remove them. A fresh `init` still showed 4
+   ghost nodes carrying zero edges.
+
+**What landed:**
+- **`declares` edge type** (new in `src/graph/types.ts`): `file → symbol` and `class → method`,
+  confidence 1.0, emitted by both analyzers. This replaced the invisible `edge-structural`
+  anchors the visualiser used as a workaround — the containment is a real fact, so it now lives
+  in the graph rather than the renderer.
+- **Per-file symbol resolution table** in `src/analyzers/typescript/index.ts` — local
+  declarations plus import bindings (named/aliased/default/namespace), built in a first pass so
+  a call to a function declared later in the file still resolves. Everything that turns an
+  identifier into an edge target goes through it.
+- **`calls` / `instantiates` edges at confidence 0.9** — deliberately below 1.0, since
+  name-based resolution isn't sound under shadowing or overloads. Sourced from the *enclosing
+  declaration* (walked via `SyntaxNode.parent`), not the file.
+- **Arrow-function and const exports, and class methods** now produce nodes; non-function
+  top-level consts produce `variable` nodes. Method ids are class-qualified
+  (`file.ts::Repo.save`) in **both** analyzers — Python's flat `file.py::save` would silently
+  merge a method with a same-named module-level function.
+- **Resolved heritage targets**; unresolvable ones emit nothing at all.
+- **`buildGraph`**: file→symbol layer inheritance; file-node field merge (fixing cause 4); and
+  edges to unresolved *symbol* endpoints are now **dropped rather than stubbed**, while missing
+  file/package endpoints still stub (those are real things that just weren't scanned).
+- **`adapter.clearGraph()`** + a call at the top of `runInit`'s persist step, making a full init
+  authoritative. Deliberately preserves `semantic_enrichments` — LLM output is expensive and
+  still valid for every node the rebuild reproduces.
+- **watsonx responsibility surfaced in the visualiser.** `startVisualiserServer` now joins
+  `readSemanticEnrichments()` onto the payload (the persisted `Node.responsibility` column is
+  never populated — enrichments live only in their own table, exactly as `explain.ts` handles
+  it). The Node Inspector leads with the summary as prose with a `watsonx · <modelId>`
+  attribution, and enriched nodes carry a cyan halo with a legend entry.
+- **Layer patterns extended** with filename-level rules and more directory names.
+
+**Measured after:**
+
+```
+nodes 235   function 112 | file 40 | variable 29 | interface 29 | package 21 | class 4
+edges 473   declares 174 | calls 160 | imports 110 | instantiates 12 | exports 12 | implements 4 | extends 1
+orphans     13 (all genuinely edge-less files like README.md) — ZERO orphan symbols (was 95)
+stub nodes  0 (was 4 phantoms)
+file nodes  exactly 40 = files scanned
+layers      21 unclassified — and those 21 are exactly the package nodes, which have no file
+            to inherit from. Every file and symbol node is classified (was 74% unclassified).
+```
+
+Browser-verified via the Playwright harness: `orphanSymbols: 0`, `declaresEdges: 174`,
+`enrichedNodes: 40`, `legacyStructuralEdges: 0`, zero page errors, layout still frames cleanly
+in all three grouping modes, and the Node Inspector renders a watsonx summary attributed
+`watsonx · openai/gpt-oss-120b`.
+
+**Two further fixes this required, both discovered during verification:**
+- **`runInit` now restores cached LLM layers.** `clearGraph()` drops the nodes the LLM's layers
+  were written onto, while the enrichments themselves survive — so without this a plain
+  structural `debob init` silently discarded paid-for watsonx output and every file fell back to
+  path heuristics. It now re-applies them from `semantic_enrichments` with no LLM calls
+  (`40 cached LLM layers restored, 93 inherited` on this repo).
+- **`inheritLayersFromFiles` must run twice.** It was only called inside `buildGraph`, which
+  happens *before* `--semantic` propagates LLM layers onto file nodes — so symbols only ever
+  inherited the heuristic layer. It is now exported from `src/graph/builder.ts` and re-run after
+  the semantic step (and after the layer restore above). This is what took unclassified from
+  113 → 21.
+
+**Known omission:** calls through a member expression (`adapter.close()`) are not extracted —
+resolving the receiver needs type information, and matching on the property name alone would
+invent edges. Documented in the analyzer's class doc comment.
+
+**Tests:** `vitest` added (`npm test`), 29 cases over
+`src/analyzers/typescript/index.test.ts` and `src/graph/builder.test.ts`. The suite found cause 4
+on its first run.
+
+---
+
 ## Visualiser Clutter/Grouping/Edge-Detail Fix — ✅ done & browser-verified
 
 User feedback on `debob visualise`: the graph rendered as a dense unreadable hairball, edges
@@ -158,6 +262,7 @@ Worth doing before relying on this at that scale.
 | H | Fix `.js`→`.ts` relative import resolution bug | ✅ done |
 | I | `AGENTS.md` auto-instructions (any-agent discovery mechanism) | ✅ done |
 | J | Python analyzer, opt-in post-commit hook, team-sharing docs | ✅ done |
+| K | Graph truth (`declares`/`calls`/`instantiates`, arrow fns, methods, resolved heritage, layer inheritance, authoritative `init`) + watsonx responsibility in the visualiser + vitest | ✅ done |
 
 ---
 
@@ -212,7 +317,13 @@ src/
     builder.ts                      ← buildGraph(files, analysisResults, gitMetadata): Graph
                                        merges scanner + analyzer + git → unified deduplicated Graph
                                        attaches churnScore/authorCount/contentHash to file nodes
-                                       marks top-10% churn file nodes hot, stubs missing edge endpoints
+                                       marks top-10% churn file nodes hot
+                                       file-node collisions MERGE (the analyzer's file node carries
+                                         inferLayer's result; plain first-writer-wins threw it away)
+                                       symbols inherit their declaring file's layer
+                                       missing file/package endpoints stub; missing SYMBOL
+                                         endpoints drop the edge (no phantom type-named nodes)
+    builder.test.ts                 ← layer inheritance + stub-vs-drop endpoint rules
 
   analyzers/
     interface.ts                    ← LanguageAnalyzer, AnalysisResult plugin interface
@@ -476,6 +587,17 @@ node dist/debob.js     # run compiled output
   to the non-compound-aware `cose` fallback
 - Do NOT use `:not()` in a cytoscape selector — it isn't supported; select on the absence of a
   data field instead (e.g. `'edge[type]'` to exclude the layout-only structural anchors)
-- Do NOT add the structural anchor edges to the `/api/graph` payload or to `EdgeType` — they are
-  a rendering-layer concern only and would corrupt the graph's "every edge is a real,
-  traceable inference" contract
+- Do NOT emit an edge to an identifier the analyzer could not resolve. `buildGraph` stubs any
+  unknown endpoint, so an unresolved name becomes a phantom `file` node named after a TypeScript
+  type. Resolve through the per-file symbol table and emit nothing on a miss
+- Do NOT try to extract calls through a member expression (`adapter.close()`) by matching the
+  property name — without the receiver's type that invents edges between unrelated symbols.
+  Only plain-identifier callees are resolved, deliberately
+- Do NOT give a `calls`/`instantiates` edge confidence 1.0 — name-based resolution is not sound
+  under shadowing or overloads. They carry 0.9 so the graph stays honest about how it knows
+- Do NOT give a class method a flat `file::method` id — it silently merges with a same-named
+  module-level function. Methods are class-qualified: `file::Class.method`
+- Do NOT assume `debob init` cleans up after itself without `adapter.clearGraph()` — every save
+  is an upsert, so anything a previous run created and this one didn't survives indefinitely
+- Do NOT put a backtick in a comment inside `src/visualiser/server.ts` — the whole page is one
+  TypeScript template literal and a stray backtick terminates it (hit twice now)

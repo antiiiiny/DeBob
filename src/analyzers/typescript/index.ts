@@ -25,14 +25,25 @@ function resolveWasmPath(filename: string): string {
 
 // ─── Layer Detection ──────────────────────────────────────────────────────────
 
+// Directory-segment patterns first, then filename patterns. Directory-only matching left
+// most of a src/-organised codebase unclassified (debob's own src/llm, src/graph, src/engine
+// matched nothing at all), so the filename rules below carry the common single-file cases.
 const LAYER_PATTERNS: Array<{ pattern: RegExp; layer: ArchitecturalLayer }> = [
   { pattern: /[/\\](tests?|spec|__tests?__|e2e)[/\\]/i, layer: 'test' },
   { pattern: /\.(test|spec)\.[tj]sx?$/, layer: 'test' },
-  { pattern: /[/\\](routes?|controllers?|handlers?|pages?|views?)[/\\]/i, layer: 'presentation' },
-  { pattern: /[/\\](services?|usecases?|use-cases?|domain)[/\\]/i, layer: 'business' },
-  { pattern: /[/\\](models?|entities|schema|schemas|migrations?|repositories?|repos?)[/\\]/i, layer: 'data' },
+  { pattern: /[/\\](routes?|controllers?|handlers?|pages?|views?|components?|ui)[/\\]/i, layer: 'presentation' },
+  { pattern: /[/\\](services?|usecases?|use-cases?|domain|engine|core)[/\\]/i, layer: 'business' },
+  { pattern: /[/\\](models?|entities|schema|schemas|migrations?|repositories?|repos?|persistence|store|db)[/\\]/i, layer: 'data' },
   { pattern: /[/\\](config|configs?|settings?)[/\\]/i, layer: 'config' },
   { pattern: /[/\\](middleware|middlewares?|guards?|interceptors?|infra|infrastructure)[/\\]/i, layer: 'infra' },
+  // Filename-level fallbacks
+  { pattern: /\.(config|rc)\.[tj]sx?$/i, layer: 'config' },
+  { pattern: /(^|[/\\])(tsconfig|tsup\.config|vite\.config|vitest\.config|webpack\.config)\b/i, layer: 'config' },
+  { pattern: /\.(schema|model|entity|dto)\.[tj]sx?$/i, layer: 'data' },
+  { pattern: /\.(route|controller|handler|page|view|component)\.[tj]sx?$/i, layer: 'presentation' },
+  { pattern: /\.(service|usecase)\.[tj]sx?$/i, layer: 'business' },
+  { pattern: /(^|[/\\])(bin|cli)[/\\]/i, layer: 'presentation' },
+  { pattern: /\.tsx$/, layer: 'presentation' },
 ]
 
 function inferLayer(filePath: string): ArchitecturalLayer | undefined {
@@ -119,6 +130,106 @@ function walkTree(node: SyntaxNode, visitor: (n: SyntaxNode) => boolean | void):
   }
 }
 
+/** Method symbols are qualified by their class: `Foo.bar`, never a bare `bar`. */
+function methodSymbolName(className: string, methodName: string): string {
+  return `${className}.${methodName}`
+}
+
+/**
+ * True when a `lexical_declaration`/`variable_declaration` sits at module top level.
+ * `export const x = ...` nests the declaration inside an `export_statement`, so that
+ * counts too. Locals inside functions are deliberately excluded — emitting a node per
+ * local `const` would bury the graph.
+ */
+function isTopLevelDeclaration(node: SyntaxNode): boolean {
+  const parent = node.parent
+  if (!parent) return false
+  if (parent.type === 'program') return true
+  return parent.type === 'export_statement' && parent.parent?.type === 'program'
+}
+
+function enclosingClassName(node: SyntaxNode): string | null {
+  for (let cur = node.parent; cur; cur = cur.parent) {
+    if (cur.type === 'class_declaration') return childText(cur, 'name')
+  }
+  return null
+}
+
+/**
+ * Node id of the declaration a given AST node sits inside — i.e. the source end of a
+ * `calls`/`instantiates` edge. Falls back to the file node for top-level statements.
+ *
+ * `walkTree` carries no parent context, but tree-sitter's `SyntaxNode.parent` does, so
+ * this walks up rather than threading state through the visitor.
+ */
+function enclosingSymbolId(node: SyntaxNode, filePath: string): string {
+  for (let cur = node.parent; cur; cur = cur.parent) {
+    switch (cur.type) {
+      case 'method_definition': {
+        const name = childText(cur, 'name')
+        const className = enclosingClassName(cur)
+        if (name && className) return symbolNodeId(filePath, methodSymbolName(className, name))
+        break
+      }
+      case 'function_declaration':
+      case 'class_declaration':
+      case 'interface_declaration': {
+        const name = childText(cur, 'name')
+        if (name) return symbolNodeId(filePath, name)
+        break
+      }
+      case 'variable_declarator': {
+        // Only top-level declarators become nodes, so only they can source an edge.
+        const declaration = cur.parent
+        if (declaration && isTopLevelDeclaration(declaration)) {
+          const name = childText(cur, 'name')
+          if (name) return symbolNodeId(filePath, name)
+        }
+        break
+      }
+    }
+  }
+  return filePath
+}
+
+/**
+ * Map every binding one `import_statement` introduces to the node id it refers to:
+ *   `import { Alpha, Beta as Gamma } from './mod.js'` → Alpha→mod.ts::Alpha, Gamma→mod.ts::Beta
+ *   `import * as ns from 'pkg'`                       → ns→pkg::pkg
+ *
+ * Default and namespace imports bind to the *module* node rather than a symbol inside it —
+ * which symbol a default export actually is can't be known from the import site, and
+ * guessing would fabricate a node. Package imports likewise collapse onto the package node:
+ * DeBob never analyses inside a dependency, so no symbol node exists there to point at.
+ */
+function collectImportBindings(
+  clause: SyntaxNode,
+  targetId: string,
+  isPackage: boolean,
+  bind: (localName: string, nodeId: string) => void,
+): void {
+  for (const child of clause.children) {
+    if (child.type === 'identifier') {
+      bind(child.text, targetId)
+      continue
+    }
+    if (child.type === 'namespace_import') {
+      const alias = child.children.find(c => c.type === 'identifier')
+      if (alias) bind(alias.text, targetId)
+      continue
+    }
+    if (child.type === 'named_imports') {
+      for (const spec of child.children) {
+        if (spec.type !== 'import_specifier') continue
+        const name = childText(spec, 'name')
+        if (!name) continue
+        const alias = childText(spec, 'alias')
+        bind(alias ?? name, isPackage ? targetId : symbolNodeId(targetId, name))
+      }
+    }
+  }
+}
+
 // ─── TypeScript Analyzer ─────────────────────────────────────────────────────
 
 /**
@@ -131,18 +242,30 @@ function walkTree(node: SyntaxNode, visitor: (n: SyntaxNode) => boolean | void):
  *
  * Extracts per file:
  *   - One `file` node
- *   - `function` nodes (function_declaration)
+ *   - `function` nodes (function_declaration, top-level arrow/function consts, class methods)
+ *   - `variable` nodes (top-level non-function const/let/var)
  *   - `class` nodes (class_declaration) + extends/implements edges
  *   - `interface` nodes (interface_declaration) + extends edges
+ *   - `declares` edges: file → its symbols, class → its methods
+ *   - `calls` / `instantiates` edges between resolved symbols (confidence 0.9)
  *   - `imports` edges to resolved repo-relative paths or pkg:: nodes
  *   - `exports` edges for re-export statements
+ *
+ * Identifier resolution runs off a per-file symbol table (local declarations + import
+ * bindings) built in a first pass. Anything that doesn't resolve emits no edge at all —
+ * see `resolveSymbol`.
+ *
+ * Known omission: calls through a member expression (`adapter.close()`) are not extracted,
+ * since resolving the receiver needs type information.
  *
  * Use the static factory: await TypeScriptAnalyzer.create(repoRoot)
  */
 export class TypeScriptAnalyzer implements LanguageAnalyzer {
   readonly language = 'typescript'
   readonly extensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts']
-  readonly version = 'ts-1.0'
+  // Bumped from ts-1.0: file_cache compares this, so a bump makes `debob update`
+  // re-analyze every file with the new extraction.
+  readonly version = 'ts-1.1'
 
   private readonly tsParser: Parser
   private readonly tsxParser: Parser
@@ -215,7 +338,68 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
       if (!edgesMap.has(e.id)) edgesMap.set(e.id, e)
     }
 
-    // ── Walk AST ──────────────────────────────────────────────────────────
+    /** file/class --declares--> symbol. A structural fact, so full confidence. */
+    const addDeclares = (ownerId: string, symbolId: string): void => {
+      addEdge({
+        id: mkEdgeId(ownerId, 'declares', symbolId),
+        source: ownerId,
+        target: symbolId,
+        type: 'declares',
+        confidence: 1.0,
+        dataSource: 'static',
+      })
+    }
+
+    // ── Pass 1: symbol resolution table ───────────────────────────────────
+    // Maps a bare identifier as written in this file to the node id it denotes, for both
+    // locally declared and imported names. Everything below that turns an identifier into
+    // an edge target goes through this. It must be built before the emit pass so that a
+    // call to a function declared *later* in the file still resolves.
+    const symbols = new Map<string, string>()
+    const bindSymbol = (localName: string, nodeId: string): void => {
+      if (!symbols.has(localName)) symbols.set(localName, nodeId)
+    }
+
+    walkTree(tree.rootNode, (node) => {
+      switch (node.type) {
+        case 'import_statement': {
+          const sourceNode = node.children.find(c => c.type === 'string')
+          if (!sourceNode) break
+          const raw = sourceNode.text.replace(/^['"]|['"]$/g, '')
+          const { id: targetId, isPackage } = resolveImportTarget(raw, filePath, this.repoRoot)
+          const clause = node.children.find(c => c.type === 'import_clause')
+          if (clause) collectImportBindings(clause, targetId, isPackage, bindSymbol)
+          break
+        }
+        case 'function_declaration':
+        case 'class_declaration':
+        case 'interface_declaration': {
+          const name = childText(node, 'name')
+          if (name) bindSymbol(name, symbolNodeId(filePath, name))
+          break
+        }
+        case 'lexical_declaration':
+        case 'variable_declaration': {
+          if (!isTopLevelDeclaration(node)) break
+          for (const declarator of node.children) {
+            if (declarator.type !== 'variable_declarator') continue
+            const name = childText(declarator, 'name')
+            if (name) bindSymbol(name, symbolNodeId(filePath, name))
+          }
+          break
+        }
+      }
+      return true
+    })
+
+    /**
+     * Resolve an identifier written in this file to a real node id, or null.
+     * Returning null means "emit no edge" — never invent a target, or the graph builder
+     * stubs a phantom node named after whatever the identifier happened to be.
+     */
+    const resolveSymbol = (name: string): string | null => symbols.get(name) ?? null
+
+    // ── Pass 2: emit nodes and edges ──────────────────────────────────────
     walkTree(tree.rootNode, (node) => {
       switch (node.type) {
 
@@ -261,8 +445,9 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
         case 'function_declaration': {
           const name = childText(node, 'name')
           if (!name) break
+          const nodeId = symbolNodeId(filePath, name)
           nodes.push({
-            id: symbolNodeId(filePath, name),
+            id: nodeId,
             type: 'function',
             name,
             filePath,
@@ -271,6 +456,90 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
             confidence: 1.0,
             dataSource: 'static',
             layer,
+          })
+          addDeclares(filePath, nodeId)
+          break
+        }
+
+        // ── lexical/var declarations at module top level ─────────────────
+        // `export const Foo = () => {}` is the dominant modern style and produced no node
+        // at all before this. An initialiser that is a function becomes a `function` node;
+        // anything else becomes a `variable` node.
+        case 'lexical_declaration':
+        case 'variable_declaration': {
+          if (!isTopLevelDeclaration(node)) break
+          for (const declarator of node.children) {
+            if (declarator.type !== 'variable_declarator') continue
+            const name = childText(declarator, 'name')
+            if (!name) continue
+            const value = declarator.childForFieldName('value')
+            const isFunction =
+              value?.type === 'arrow_function' ||
+              value?.type === 'function_expression' ||
+              value?.type === 'function'
+            const nodeId = symbolNodeId(filePath, name)
+            nodes.push({
+              id: nodeId,
+              type: isFunction ? 'function' : 'variable',
+              name,
+              filePath,
+              startLine: declarator.startPosition.row + 1,
+              endLine: declarator.endPosition.row + 1,
+              confidence: 1.0,
+              dataSource: 'static',
+              layer,
+            })
+            addDeclares(filePath, nodeId)
+          }
+          break
+        }
+
+        // ── method_definition ───────────────────────────────────────────
+        case 'method_definition': {
+          const name = childText(node, 'name')
+          const className = enclosingClassName(node)
+          if (!name || !className) break
+          const qualified = methodSymbolName(className, name)
+          const nodeId = symbolNodeId(filePath, qualified)
+          nodes.push({
+            id: nodeId,
+            type: 'function',
+            name: qualified,
+            filePath,
+            startLine: node.startPosition.row + 1,
+            endLine: node.endPosition.row + 1,
+            confidence: 1.0,
+            dataSource: 'static',
+            layer,
+          })
+          // Owned by its class, not the file — the containment chain stays real.
+          addDeclares(symbolNodeId(filePath, className), nodeId)
+          break
+        }
+
+        // ── call_expression / new_expression ────────────────────────────
+        // Only plain-identifier callees are resolved. A member_expression
+        // (`adapter.close()`) needs the receiver's type to resolve; matching on the
+        // property name alone would invent edges, so those are deliberately skipped.
+        case 'call_expression':
+        case 'new_expression': {
+          const calleeField = node.type === 'call_expression' ? 'function' : 'constructor'
+          const callee = node.childForFieldName(calleeField)
+          if (!callee || callee.type !== 'identifier') break
+          const target = resolveSymbol(callee.text)
+          if (!target) break
+          const source = enclosingSymbolId(node, filePath)
+          if (source === target) break // self-recursion renders as a meaningless self-loop
+          const edgeType = node.type === 'call_expression' ? 'calls' : 'instantiates'
+          addEdge({
+            id: mkEdgeId(source, edgeType, target),
+            source,
+            target,
+            type: edgeType,
+            // Name-based resolution is not sound under shadowing or overloads. Deliberately
+            // below 1.0 so the graph stays honest about how it knows this.
+            confidence: 0.9,
+            dataSource: 'static',
           })
           break
         }
@@ -291,19 +560,22 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
             dataSource: 'static',
             layer,
           })
-          // Heritage clauses: class_heritage contains extends_clause + implements_clause
+          addDeclares(filePath, nodeId)
+          // Heritage clauses: class_heritage contains extends_clause + implements_clause.
+          // Targets are resolved through the symbol table — using the raw source text (as
+          // this did before) makes the graph builder stub a phantom `file` node named after
+          // a TypeScript type. Unresolvable bases emit nothing.
           for (const child of node.children) {
             if (child.type === 'class_heritage') {
               for (const clause of child.children) {
                 if (clause.type === 'extends_clause') {
-                  const base = clause.children.find(
-                    c => c.type !== 'extends' && c.isNamed,
-                  )?.text
-                  if (base) {
+                  const base = clause.childForFieldName('value')?.text
+                  const target = base ? resolveSymbol(base) : null
+                  if (target) {
                     addEdge({
-                      id: mkEdgeId(nodeId, 'extends', base),
+                      id: mkEdgeId(nodeId, 'extends', target),
                       source: nodeId,
-                      target: base,
+                      target,
                       type: 'extends',
                       confidence: 1.0,
                       dataSource: 'static',
@@ -313,16 +585,17 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
                 if (clause.type === 'implements_clause') {
                   for (const typeNode of clause.children) {
                     if (typeNode.type === 'implements' || typeNode.type === ',') continue
-                    if (typeNode.isNamed) {
-                      addEdge({
-                        id: mkEdgeId(nodeId, 'implements', typeNode.text),
-                        source: nodeId,
-                        target: typeNode.text,
-                        type: 'implements',
-                        confidence: 1.0,
-                        dataSource: 'static',
-                      })
-                    }
+                    if (!typeNode.isNamed) continue
+                    const target = resolveSymbol(typeNode.text)
+                    if (!target) continue
+                    addEdge({
+                      id: mkEdgeId(nodeId, 'implements', target),
+                      source: nodeId,
+                      target,
+                      type: 'implements',
+                      confidence: 1.0,
+                      dataSource: 'static',
+                    })
                   }
                 }
               }
@@ -347,21 +620,23 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
             dataSource: 'static',
             layer,
           })
-          // extends_type_clause: interface Foo extends Bar, Baz
+          addDeclares(filePath, nodeId)
+          // extends_type_clause: interface Foo extends Bar, Baz — resolved, not raw text.
           for (const child of node.children) {
             if (child.type === 'extends_type_clause') {
               for (const typeNode of child.children) {
                 if (typeNode.type === 'extends' || typeNode.type === ',') continue
-                if (typeNode.isNamed) {
-                  addEdge({
-                    id: mkEdgeId(nodeId, 'extends', typeNode.text),
-                    source: nodeId,
-                    target: typeNode.text,
-                    type: 'extends',
-                    confidence: 1.0,
-                    dataSource: 'static',
-                  })
-                }
+                if (!typeNode.isNamed) continue
+                const target = resolveSymbol(typeNode.text)
+                if (!target) continue
+                addEdge({
+                  id: mkEdgeId(nodeId, 'extends', target),
+                  source: nodeId,
+                  target,
+                  type: 'extends',
+                  confidence: 1.0,
+                  dataSource: 'static',
+                })
               }
             }
           }

@@ -76,6 +76,13 @@ export interface PersistenceAdapter {
   deleteFileCacheEntries(filePaths: string[]): void
   /** Delete LLM outputs for nodes that are about to be re-analyzed or removed. */
   deleteSemanticEnrichments(nodeIds: string[]): void
+  /**
+   * Drop every node and edge, so a full `debob init` is authoritative rather than an
+   * upsert over whatever the last run happened to leave behind. Deliberately leaves
+   * semantic_enrichments intact: LLM output is expensive, keyed by node id, and still
+   * valid for every node the rebuild reproduces.
+   */
+  clearGraph(): void
   /** Read the full graph from storage. */
   readGraph(): Graph
   /** Read all file cache entries (used by engine to determine what needs re-analysis). */

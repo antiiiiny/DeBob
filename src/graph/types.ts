@@ -29,6 +29,8 @@ export type NodeType =
 export type EdgeType =
   | 'imports'
   | 'exports'
+  /** Structural containment: a file declares a symbol, a class declares a method. */
+  | 'declares'
   | 'calls'
   | 'depends_on'
   | 'extends'

@@ -36,6 +36,29 @@ function makeStubNode(id: string): Node {
   }
 }
 
+/**
+ * Give every symbol node the layer of the file that declares it, where it has none of
+ * its own. Layer is only ever determined per *file* — by `inferLayer`'s path heuristics
+ * and, in `--semantic` mode, by the LLM — so without this every function, class and
+ * interface stays unclassified no matter how well its file was classified.
+ *
+ * Exported because it must run **twice**: once here, and again after `--semantic`
+ * propagates LLM layers onto file nodes, which happens well after the graph is built.
+ * Returns only the nodes it actually changed, so callers can persist just those.
+ */
+export function inheritLayersFromFiles(nodes: Map<string, Node>): Node[] {
+  const changed: Node[] = []
+  for (const node of nodes.values()) {
+    if (node.type === 'file' || node.type === 'package') continue
+    if (node.layer !== undefined) continue
+    const fileNode = nodes.get(node.filePath)
+    if (fileNode?.layer === undefined) continue
+    node.layer = fileNode.layer
+    changed.push(node)
+  }
+  return changed
+}
+
 // ─── Graph Builder ────────────────────────────────────────────────────────────
 
 /**
@@ -85,6 +108,13 @@ export function buildGraph(
       } else if (SYMBOL_NODE_TYPES.has(node.type) && existing.type === 'file') {
         // Symbol node wins over bare file node on the same id
         nodes.set(node.id, node)
+      } else if (existing.type === 'file' && node.type === 'file') {
+        // Step 1 seeds a bare file node per scanned file, with no layer. The analyzer
+        // then produces a file node for the same id carrying `inferLayer`'s result.
+        // Plain first-writer-wins silently threw that layer away for every single file.
+        if (existing.layer === undefined && node.layer !== undefined) existing.layer = node.layer
+        if (existing.startLine === undefined) existing.startLine = node.startLine
+        if (existing.endLine === undefined) existing.endLine = node.endLine
       }
       // All other collisions (e.g. same symbol from multiple passes): first writer wins
     }
@@ -164,18 +194,33 @@ export function buildGraph(
     }
   }
 
-  // ─── Step 6: Stub missing edge endpoints ─────────────────────────────────────
+  // ─── Step 6: Inherit layer from declaring file ───────────────────────────────
 
+  inheritLayersFromFiles(nodes)
+
+  // ─── Step 7: Resolve or drop missing edge endpoints ──────────────────────────
+
+  // A missing *file* or *package* endpoint is a real thing that simply wasn't scanned
+  // (an ignored path, an uninstalled dependency), so it gets a stub node. A missing
+  // *symbol* endpoint is different: it means an analyzer emitted an edge to a name it
+  // couldn't resolve, and stubbing it fabricates a `file` node named after a TypeScript
+  // type. Drop those edges instead — a missing edge beats an invented node.
+  const isSymbolId = (id: string): boolean => id.includes('::') && !id.startsWith('pkg::')
+
+  const resolvedEdges: Edge[] = []
   for (const edge of edgeMap.values()) {
-    if (!nodes.has(edge.source)) {
-      nodes.set(edge.source, makeStubNode(edge.source))
+    const missingSource = !nodes.has(edge.source)
+    const missingTarget = !nodes.has(edge.target)
+
+    if ((missingSource && isSymbolId(edge.source)) || (missingTarget && isSymbolId(edge.target))) {
+      continue
     }
-    if (!nodes.has(edge.target)) {
-      nodes.set(edge.target, makeStubNode(edge.target))
-    }
+    if (missingSource) nodes.set(edge.source, makeStubNode(edge.source))
+    if (missingTarget) nodes.set(edge.target, makeStubNode(edge.target))
+    resolvedEdges.push(edge)
   }
 
-  // ─── Step 7: Return graph ─────────────────────────────────────────────────────
+  // ─── Step 8: Return graph ─────────────────────────────────────────────────────
 
-  return { nodes, edges: Array.from(edgeMap.values()) }
+  return { nodes, edges: resolvedEdges }
 }

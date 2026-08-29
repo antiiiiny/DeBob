@@ -10,6 +10,8 @@
     "build": "tsup",
     "dev": "tsx bin/debob.ts",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "start": "node dist/bin/debob.js"
   },
   "dependencies": {
@@ -30,7 +32,8 @@
     "@types/sql.js": "^1.4.9",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": ">=18"

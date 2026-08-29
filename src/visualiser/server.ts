@@ -12,7 +12,12 @@ import {
 type VisualiserNode = Pick<
   Node,
   'id' | 'type' | 'name' | 'filePath' | 'layer' | 'startLine' | 'endLine' | 'confidence' | 'dataSource' | 'metadata'
->
+> & {
+  /** LLM-written module summary, joined from semantic_enrichments. */
+  responsibility?: string
+  /** Model that produced `responsibility`, for attribution in the UI. */
+  responsibilityModel?: string
+}
 type VisualiserEdge = Pick<Edge, 'id' | 'source' | 'target' | 'type' | 'confidence' | 'dataSource'>
 
 interface VisualiserPayload {
@@ -37,16 +42,32 @@ export async function startVisualiserServer(
   const { db, dbPath } = await openDb(repoRoot)
   const adapter = new SqlitePersistenceAdapter(db, dbPath)
   let graph
+  let enrichments
   try {
     graph = adapter.readGraph()
+    // `Node.responsibility` is never populated in the persisted graph — LLM output lives
+    // only in semantic_enrichments — so it has to be joined on read, the same way
+    // src/engine/explain.ts does it. Without this the visualiser shows nothing watsonx wrote.
+    enrichments = adapter.readSemanticEnrichments()
   } finally {
     // sql.js allocates the database in memory, including for this read-only use.
     adapter.close()
   }
 
+  const responsibilities = new Map<string, { value: string; modelId: string }>()
+  for (const enrichment of enrichments) {
+    if (enrichment.field !== 'responsibility') continue
+    responsibilities.set(enrichment.nodeId, {
+      value: enrichment.value,
+      modelId: enrichment.modelId,
+    })
+  }
+
   const payload: VisualiserPayload = {
     manifest: readManifest(repoRoot),
-    nodes: Array.from(graph.nodes.values()).map(serialiseNode),
+    nodes: Array.from(graph.nodes.values()).map(node =>
+      serialiseNode(node, responsibilities.get(node.id)),
+    ),
     edges: graph.edges.map(serialiseEdge),
   }
   const requestedPort = options.port ?? 7842
@@ -71,7 +92,10 @@ export async function startVisualiserServer(
   throw new Error('Unable to start graph visualiser: the next 5 ports are already in use.')
 }
 
-function serialiseNode(node: Node): VisualiserNode {
+function serialiseNode(
+  node: Node,
+  enrichment?: { value: string; modelId: string },
+): VisualiserNode {
   return {
     id: node.id,
     type: node.type,
@@ -83,6 +107,8 @@ function serialiseNode(node: Node): VisualiserNode {
     confidence: node.confidence,
     dataSource: node.dataSource,
     metadata: node.metadata,
+    responsibility: enrichment?.value ?? node.responsibility,
+    responsibilityModel: enrichment?.modelId,
   }
 }
 
@@ -191,10 +217,14 @@ const VISUALISER_HTML = `<!doctype html>
     .legend-items { display: flex; flex-wrap: wrap; gap: 6px 11px; }
     .legend-item { align-items: center; color: #c4cfda; display: flex; font-size: 11px; gap: 5px; }
     .legend-swatch { border-radius: 50%; height: 9px; width: 9px; } .legend-line { border-radius: 2px; height: 3px; width: 13px; }
+    .marker-enriched { background: #607083; box-shadow: 0 0 0 3px rgba(34,211,238,.45); margin: 0 2px; }
+    .marker-hot { background: #607083; box-shadow: 0 0 0 2px #FF0000; margin: 0 1px; }
     .legend-section + .legend-section { margin-top: 9px; }
     #inspector-empty { color: #8394a7; font-size: 13px; line-height: 1.5; }
     #inspector-content { display: none; } #inspector-content.visible { display: block; }
     .node-heading { color: white; font-size: 15px; margin: 0 0 15px; overflow-wrap: anywhere; }
+    .node-summary { background: rgba(74,144,217,.07); border-left: 2px solid #4A90D9; border-radius: 0 5px 5px 0; color: #dbe4ee; font-size: 13px; line-height: 1.55; margin: 0 0 4px; padding: 10px 12px; }
+    .summary-attribution { color: #7f93a8; font-size: 10px; letter-spacing: .06em; margin: 0 0 14px; text-transform: uppercase; }
     .detail-row { border-bottom: 1px solid #223244; padding: 8px 0; }
     .detail-label { color: #8496aa; display: block; font-size: 10px; letter-spacing: .07em; margin-bottom: 3px; text-transform: uppercase; }
     .detail-value, .edge-list li { color: #dbe4ee; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
@@ -227,6 +257,10 @@ const VISUALISER_HTML = `<!doctype html>
       <div id="edge-tooltip"></div>
       <section id="legend">
         <div class="legend-section"><div class="legend-title">Node types</div><div class="legend-items" id="node-legend"></div></div>
+        <div class="legend-section"><div class="legend-title">Markers</div><div class="legend-items">
+          <div class="legend-item"><span class="legend-swatch marker-enriched"></span><span>described by watsonx</span></div>
+          <div class="legend-item"><span class="legend-swatch marker-hot"></span><span>hot (high churn)</span></div>
+        </div></div>
         <div class="legend-section"><div class="legend-title">Edge types</div><div class="legend-items" id="edge-legend"></div></div>
       </section>
     </main>
@@ -235,14 +269,11 @@ const VISUALISER_HTML = `<!doctype html>
   <script>
     (function () {
       var NODE_TYPES = ['file', 'class', 'function', 'interface', 'variable', 'package', 'route'];
-      // Node types that are declared inside a file, i.e. that get a layout-only anchor edge
-      // back to their declaring file node. 'file' and 'package' are excluded deliberately.
-      var SYMBOL_TYPES = ['class', 'function', 'interface', 'variable', 'route'];
-      var EDGE_TYPES = ['imports', 'exports', 'extends', 'implements', 'calls', 'depends_on', 'instantiates', 'exposes', 'handles', 'tests', 'reads_from', 'writes_to', 'communicates_with', 'configured_by', 'related_to'];
+      var EDGE_TYPES = ['imports', 'exports', 'declares', 'extends', 'implements', 'calls', 'depends_on', 'instantiates', 'exposes', 'handles', 'tests', 'reads_from', 'writes_to', 'communicates_with', 'configured_by', 'related_to'];
       var LAYERS = ['presentation', 'business', 'data', 'config', 'test', 'infra', 'unclassified'];
       var NODE_COLORS = { file: '#4A90D9', class: '#7B61FF', function: '#50C878', interface: '#FFB347', variable: '#87CEEB', package: '#FF6B6B', route: '#FFD700' };
       var EDGE_COLORS = {
-        imports: '#9AA5B1', exports: '#4A90D9', extends: '#7B61FF', implements: '#FFB347',
+        imports: '#9AA5B1', exports: '#4A90D9', declares: '#3D5068', extends: '#7B61FF', implements: '#FFB347',
         calls: '#50C878', depends_on: '#FF6B6B', instantiates: '#E879F9', exposes: '#22D3EE',
         handles: '#F97316', tests: '#A3E635', reads_from: '#38BDF8', writes_to: '#F43F5E',
         communicates_with: '#C084FC', configured_by: '#FACC15', related_to: '#94A3B8'
@@ -390,7 +421,9 @@ const VISUALISER_HTML = `<!doctype html>
           elements.push({
             group: 'nodes',
             data: nodeData,
-            classes: 'node-' + node.type + (node.metadata && node.metadata.hot === true ? ' hot' : '')
+            classes: 'node-' + node.type
+              + (node.metadata && node.metadata.hot === true ? ' hot' : '')
+              + (node.responsibility ? ' enriched' : '')
           });
         });
         // Region (compound parent) nodes must exist before their children reference them.
@@ -407,25 +440,6 @@ const VISUALISER_HTML = `<!doctype html>
           });
         });
 
-        // The V1 analyzers emit no call-graph, and 'exports' edges only for re-exports
-        // (export { x } from '...'), so a plain 'export function foo() {}' leaves its symbol
-        // node with zero edges. As free top-level nodes the layout's tile:true grid-packs
-        // those neatly, but once region grouping gives them a compound parent they stop being
-        // tileable and the whole region degenerates into a stray spread-out line while the
-        // genuinely connected file/package cluster gets squeezed into a corner. Anchoring each
-        // symbol to its declaring file fixes that. These are layout-only: never in the real
-        // graph payload, no EDGE_TYPES type, invisible, and excluded from every edge handler.
-        var nodeIds = new Set(data.nodes.map(function (node) { return node.id; }));
-        data.nodes.forEach(function (node) {
-          if (SYMBOL_TYPES.indexOf(node.type) === -1) return;
-          if (!node.filePath || node.filePath === node.id || !nodeIds.has(node.filePath)) return;
-          elements.push({
-            group: 'edges',
-            data: { id: 'structural::' + node.filePath + '::' + node.id, source: node.filePath, target: node.id },
-            classes: 'edge-structural'
-          });
-        });
-
         var styles = [
           { selector: 'node', style: { 'background-color': '#607083', 'border-color': '#101923', 'border-width': 1, color: '#e8edf4', label: 'data(label)', 'font-size': 10, 'min-zoomed-font-size': 8, 'text-outline-color': '#0d141c', 'text-outline-width': 2, 'text-valign': 'bottom', 'text-margin-y': 5 } },
           // Scoped to [diameter] so region compound nodes - which have no diameter and size
@@ -436,8 +450,14 @@ const VISUALISER_HTML = `<!doctype html>
           // each emit a pair of mapping warnings.
           { selector: 'edge[edgeColor]', style: { 'line-color': 'data(edgeColor)', 'target-arrow-color': 'data(edgeColor)' } },
           { selector: 'edge.edge-hover', style: { opacity: 1, width: 2.8, 'z-index': 998 } },
-          // Layout-only anchors: they must pull on the force layout but never be seen.
-          { selector: 'edge.edge-structural', style: { opacity: 0, width: 0.5, 'target-arrow-shape': 'none', events: 'no' } },
+          // declares edges are the graph's connective tissue and vastly outnumber the rest.
+          // Drawn faintly and without an arrowhead so they shape the layout and stay
+          // inspectable, without turning the canvas into a hairball.
+          { selector: 'edge.edge-declares', style: { opacity: .22, width: 1, 'target-arrow-shape': 'none' } },
+          { selector: 'edge.edge-declares.edge-hover', style: { opacity: .9, width: 2.4 } },
+          // A soft halo rather than a border, so "watsonx described this" composes with the
+          // red hot-file border instead of fighting it for the same visual channel.
+          { selector: 'node.enriched', style: { 'underlay-color': '#22D3EE', 'underlay-opacity': .28, 'underlay-padding': 6 } },
           { selector: 'node.hot', style: { 'border-color': '#FF0000', 'border-width': 3 } },
           { selector: 'node.search-dim', style: { opacity: .13 } },
           { selector: 'node.search-match', style: { 'border-color': '#ffffff', 'border-width': 4, 'z-index': 999 } },
@@ -541,10 +561,6 @@ const VISUALISER_HTML = `<!doctype html>
           } else element.hide();
         });
         cy.edges().forEach(function (element) {
-          // Structural anchors carry no EDGE_TYPES type and would always fail the check
-          // below. Leave them shown so they keep pulling on any re-layout - they render
-          // invisibly and ignore pointer events via their own style rule.
-          if (element.hasClass('edge-structural')) { element.show(); return; }
           var edge = element.data();
           if (state.edgeTypes.has(edge.type) && visibleNodes.has(edge.source) && visibleNodes.has(edge.target)) element.show();
           else element.hide();
@@ -593,6 +609,20 @@ const VISUALISER_HTML = `<!doctype html>
         title.className = 'node-heading';
         title.textContent = node.name;
         inspector.appendChild(title);
+        // The LLM's summary is the most valuable thing on this panel, so it leads - as prose,
+        // visually distinct from the deterministic monospace facts below, and attributed so
+        // it's never mistaken for something static analysis derived. Absent enrichment shows
+        // nothing at all rather than an empty placeholder row.
+        if (node.responsibility) {
+          var summary = document.createElement('p');
+          summary.className = 'node-summary';
+          summary.textContent = node.responsibility;
+          inspector.appendChild(summary);
+          var attribution = document.createElement('div');
+          attribution.className = 'summary-attribution';
+          attribution.textContent = 'watsonx' + (node.responsibilityModel ? ' · ' + node.responsibilityModel : '');
+          inspector.appendChild(attribution);
+        }
         detail('ID', node.id); detail('Name', node.name); detail('Type', node.type);
         detail('File path', node.filePath); detail('Layer', node.layer || 'unclassified');
         detail('Lines', lineRange(node.startLine, node.endLine)); detail('Confidence', node.confidence);

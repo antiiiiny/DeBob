@@ -75,6 +75,14 @@ function walkTree(node: SyntaxNode, visitor: (n: SyntaxNode) => boolean | void):
   }
 }
 
+/** Name of the class a definition sits inside, or null when it's a module-level function. */
+function enclosingClassName(node: SyntaxNode): string | null {
+  for (let cur = node.parent; cur; cur = cur.parent) {
+    if (cur.type === 'class_definition') return cur.childForFieldName('name')?.text ?? null
+  }
+  return null
+}
+
 /** Extract the dotted-name text from a `dotted_name` or `aliased_import` node. */
 function dottedNameText(node: SyntaxNode): string | null {
   if (node.type === 'dotted_name') return node.text
@@ -106,7 +114,8 @@ function dottedNameText(node: SyntaxNode): string | null {
 export class PythonAnalyzer implements LanguageAnalyzer {
   readonly language = 'python'
   readonly extensions = ['.py']
-  readonly version = 'py-1.0'
+  // Bumped from py-1.0 for `declares` edges + class-qualified method ids.
+  readonly version = 'py-1.1'
 
   private readonly parser: Parser
   private readonly repoRoot: string
@@ -172,6 +181,19 @@ export class PythonAnalyzer implements LanguageAnalyzer {
       if (!edgesMap.has(edge.id)) edgesMap.set(edge.id, edge)
     }
 
+    /** file/class --declares--> symbol. A structural fact, so full confidence. */
+    const addDeclares = (ownerId: string, symbolId: string): void => {
+      const edge: Edge = {
+        id: mkEdgeId(ownerId, 'declares', symbolId),
+        source: ownerId,
+        target: symbolId,
+        type: 'declares',
+        confidence: 1.0,
+        dataSource: 'static',
+      }
+      if (!edgesMap.has(edge.id)) edgesMap.set(edge.id, edge)
+    }
+
     walkTree(tree.rootNode, (node) => {
       switch (node.type) {
 
@@ -216,16 +238,22 @@ export class PythonAnalyzer implements LanguageAnalyzer {
         case 'function_definition': {
           const name = node.childForFieldName('name')?.text
           if (!name) break
+          // A method is qualified by its class. A flat `file.py::save` would collide with a
+          // top-level `save` in the same file and silently merge two different symbols.
+          const className = enclosingClassName(node)
+          const symbolName = className ? `${className}.${name}` : name
+          const nodeId = symbolNodeId(filePath, symbolName)
           nodes.push({
-            id: symbolNodeId(filePath, name),
+            id: nodeId,
             type: 'function',
-            name,
+            name: symbolName,
             filePath,
             startLine: node.startPosition.row + 1,
             endLine: node.endPosition.row + 1,
             confidence: 1.0,
             dataSource: 'static',
           })
+          addDeclares(className ? symbolNodeId(filePath, className) : filePath, nodeId)
           break
         }
 
@@ -233,8 +261,9 @@ export class PythonAnalyzer implements LanguageAnalyzer {
         case 'class_definition': {
           const name = node.childForFieldName('name')?.text
           if (!name) break
+          const nodeId = symbolNodeId(filePath, name)
           nodes.push({
-            id: symbolNodeId(filePath, name),
+            id: nodeId,
             type: 'class',
             name,
             filePath,
@@ -243,6 +272,7 @@ export class PythonAnalyzer implements LanguageAnalyzer {
             confidence: 1.0,
             dataSource: 'static',
           })
+          addDeclares(filePath, nodeId)
           break
         }
       }

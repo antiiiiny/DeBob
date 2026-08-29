@@ -1,7 +1,9 @@
 import { defineConfig } from 'tsup'
 
 export default defineConfig({
-  entry: ['bin/debob.ts', 'src/**/*.ts'],
+  // The negations are load-bearing: without them vitest specs get compiled into dist/
+  // and shipped with the package.
+  entry: ['bin/debob.ts', 'src/**/*.ts', '!src/**/*.test.ts', '!src/**/*.spec.ts'],
   format: ['esm'],
   dts: true,
   sourcemap: true,
@@ -13,7 +15,6 @@ export default defineConfig({
   target: 'node18',
   platform: 'node',
   outDir: 'dist',
-  // Exclude test/spec files
   esbuildOptions(options) {
     options.conditions = ['node']
   },

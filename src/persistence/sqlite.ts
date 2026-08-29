@@ -264,6 +264,11 @@ export class SqlitePersistenceAdapter implements PersistenceAdapter {
 
   // ─── Incremental-update cleanup ───────────────────────────────────────────
 
+  clearGraph(): void {
+    this.db.run('DELETE FROM edges')
+    this.db.run('DELETE FROM nodes')
+  }
+
   deleteNodesByFilePaths(filePaths: string[]): void {
     if (filePaths.length === 0) return
     const stmt = this.db.prepare(

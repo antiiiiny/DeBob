@@ -6,7 +6,7 @@ import { TypeScriptAnalyzer } from '../analyzers/typescript/index.js'
 import { PythonAnalyzer } from '../analyzers/python/index.js'
 import type { LanguageAnalyzer, AnalysisResult } from '../analyzers/interface.js'
 import { extractGitMetadata } from '../git/index.js'
-import { buildGraph } from '../graph/builder.js'
+import { buildGraph, inheritLayersFromFiles } from '../graph/builder.js'
 import type { ArchitecturalLayer, Edge, Graph, Node } from '../graph/types.js'
 import { openDb, readManifest, SqlitePersistenceAdapter, writeManifest } from '../persistence/sqlite.js'
 import type { Manifest } from '../persistence/sqlite.js'
@@ -334,6 +334,30 @@ export async function runInit(
   const { db, dbPath } = await openDb(repoRoot)
   const adapter = new SqlitePersistenceAdapter(db, dbPath)
 
+  // `init` is a full rebuild, so the freshly built graph must be the whole truth. Without
+  // this the saves below are pure upserts: nodes an earlier run produced but this one no
+  // longer does (a renamed symbol, or a phantom from a since-fixed analyzer bug) survive
+  // forever with nothing to ever remove them. Enrichments are preserved — see clearGraph.
+  // Re-apply layers the LLM already worked out on a previous run. clearGraph() drops the
+  // nodes those layers were written onto, but the enrichments themselves survive — so
+  // without this a plain structural `debob init` silently throws away paid-for LLM output
+  // and every file reverts to whatever the path heuristics can guess.
+  const existingEnrichments = adapter.readSemanticEnrichments()
+  let restoredLayers = 0
+  for (const enrichment of existingEnrichments) {
+    if (enrichment.field !== 'layer') continue
+    const node = graph.nodes.get(enrichment.nodeId)
+    if (!node) continue
+    node.layer = enrichment.value as ArchitecturalLayer
+    restoredLayers += 1
+  }
+  if (restoredLayers > 0) {
+    const reinherited = inheritLayersFromFiles(graph.nodes)
+    log('persist', `${restoredLayers} cached LLM layers restored, ${reinherited.length} inherited`)
+  }
+
+  adapter.clearGraph()
+
   const allNodes = Array.from(graph.nodes.values())
   adapter.saveNodes(allNodes)
   adapter.saveEdges(graph.edges)
@@ -393,10 +417,19 @@ export async function runInit(
         updatedLayerNodes.push(node)
       }
     }
-    if (updatedLayerNodes.length > 0) {
-      adapter.saveNodes(updatedLayerNodes)
+    // The LLM classifies *files*. Symbols inherited a layer back when the graph was built,
+    // which was before any of this ran — so re-run the inheritance now that file nodes
+    // finally carry the LLM's answer, or every symbol stays unclassified.
+    const inheritedNodes = inheritLayersFromFiles(graph.nodes)
+    const layerNodesToSave = [...updatedLayerNodes, ...inheritedNodes]
+    if (layerNodesToSave.length > 0) {
+      adapter.saveNodes(layerNodesToSave)
     }
-    log('semantic', `${enrichments.length} enrichments saved, ${updatedLayerNodes.length} layers propagated`)
+    log(
+      'semantic',
+      `${enrichments.length} enrichments saved, ${updatedLayerNodes.length} layers propagated, ` +
+        `${inheritedNodes.length} symbols inherited a layer`,
+    )
   }
 
   // ─── Step 8: Save to disk (REQUIRED for sql.js) ───────────────────────────
@@ -713,10 +746,19 @@ export async function runUpdate(
         updatedLayerNodes.push(node)
       }
     }
-    if (updatedLayerNodes.length > 0) {
-      adapter.saveNodes(updatedLayerNodes)
+    // The LLM classifies *files*. Symbols inherited a layer back when the graph was built,
+    // which was before any of this ran — so re-run the inheritance now that file nodes
+    // finally carry the LLM's answer, or every symbol stays unclassified.
+    const inheritedNodes = inheritLayersFromFiles(graph.nodes)
+    const layerNodesToSave = [...updatedLayerNodes, ...inheritedNodes]
+    if (layerNodesToSave.length > 0) {
+      adapter.saveNodes(layerNodesToSave)
     }
-    log('semantic', `${enrichments.length} enrichments saved, ${updatedLayerNodes.length} layers propagated`)
+    log(
+      'semantic',
+      `${enrichments.length} enrichments saved, ${updatedLayerNodes.length} layers propagated, ` +
+        `${inheritedNodes.length} symbols inherited a layer`,
+    )
   }
 
   // ─── Step 11: Close DB; write manifest ────────────────────────────────────
