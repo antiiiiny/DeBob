@@ -22,6 +22,97 @@ The LLM **never receives the full repository**. The graph + query layer assemble
 
 ---
 
+## Visualiser Clutter/Grouping/Edge-Detail Fix — ✅ done & browser-verified
+
+User feedback on `debob visualise`: the graph rendered as a dense unreadable hairball, edges
+showed no information on hover or click, and there was no way to visually separate nodes into
+groups/regions. Then, after the first grouping attempt: with "Group by folder"/"Group by layer"
+on, a thin line of nodes strung across the top of the canvas while the real cluster was squeezed
+into a corner of a mostly-empty void. All of it is in `src/visualiser/server.ts` (the only file
+involved — a small Node HTTP server + one inline Cytoscape.js HTML/JS template string, no
+separate frontend build).
+
+**What landed:**
+- Edge interactivity: hover shows a floating tooltip (`#edge-tooltip`), clicking an edge
+  populates the Node Inspector panel via `showEdgeInspector()`. Verified working.
+- Region grouping: a `#group-by` dropdown (None / Folder / Layer) computes a `region` per node
+  (`folderRegionFor`/`layerRegionFor`) and assigns it as a Cytoscape compound-node `parent`, so
+  nodes render inside labeled, dashed-border boxes. Only regions with >1 member get boxed
+  (`regionCounts[region.id] > 1`) — a singleton's sole node stays an ordinary top-level node.
+- **Root cause of the stray-line/void layout (fixed):** two independent problems compounding.
+  1. **The compound-aware layout was never actually loading.** `cytoscape-fcose@2` and then
+     `cytoscape-cose-bilkent@4` both threw `Cannot read properties of undefined (reading
+     'layoutBase')` on load. A previous session diagnosed this as a bug in the packages'
+     published UMD builds. **That diagnosis was wrong.** Both ship as webpack UMD bundles that
+     *externalise* their dependencies rather than inlining them, so the dependency chain must be
+     loaded first, in order: `layout-base` (global `layoutBase`) → `cose-base` (global
+     `coseBase`) → `cytoscape-fcose` (global `cytoscapeFcose`). A lone `<script>` tag for the
+     extension can never work. With all three tags present fcose loads and registers fine.
+     Because the load silently failed, the `try/catch` fell through to plain `cose` — which is
+     **not** compound-node-aware — and that is what produced the bad layout. Confirmed by
+     `window.__debobLayoutName` reading `'cose'` in a live browser while the code "used"
+     cose-bilkent.
+  2. **Nearly every symbol node is a 0-degree orphan.** The V1 analyzers emit no `calls` edges,
+     and `exports` edges only for *re-exports* (`export { x } from '...'`) — a plain
+     `export function foo() {}` produces no edge at all. Measured on this repo: 95 of 162 nodes
+     had zero edges. Free-floating, the layout's `tile: true` grid-packs those neatly; but once
+     region grouping gives them a compound parent they stop being tileable and each region
+     degenerates into a spread-out blob. Fix: `setupGraph` now synthesises an invisible
+     **structural anchor edge** from each file node to every symbol declared in it (class
+     `edge-structural`, no `type` data field, `opacity: 0`, `events: 'no'`). They are
+     layout-only — never added to the `/api/graph` payload, never shown, and excluded from every
+     edge handler and from the edge-type filters.
+- Edge handlers select real edges via **`'edge[type]'`** (absence of a data field), *not*
+  `'edge:not(.edge-structural)'` — cytoscape has no `:not()` pseudo-class and logs
+  "The selector ... is invalid" for it while still firing the handler.
+- Style selectors scoped to `node[diameter]` and `edge[edgeColor]` so region/structural elements
+  don't each emit a pair of "no mapping for property" warnings (was 820 warnings, now 0).
+- `cy.elements().stop(true)` before `cy.destroy()` on a grouping change — an async layout that
+  ticks after its instance is destroyed throws `Cannot read properties of null (reading
+  'isHeadless')` onto the page (was 33 page errors per session, now 0).
+- Region labels: `font-size: 26`, `min-zoomed-font-size: 0`. Grouped mode fits at ~0.4–0.55
+  zoom, where the base `min-zoomed-font-size: 8` hid the region labels entirely — i.e. the one
+  thing grouping exists to show.
+- `cy.fit()` on `layoutstop` so the graph is always framed to the viewport.
+
+**Measured before → after** (this repo, 162 nodes/117 edges, 1040×882 canvas, via Playwright):
+
+| Mode | Node bbox before | Zoom before | Node bbox after | Zoom after |
+|---|---|---|---|---|
+| Group by folder | 27985 × 6571 | 0.034 | 1629 × 1549 | 0.518 |
+| Group by layer | 22286 × 16121 | 0.042 | 2288 × 1552 | 0.420 |
+| No grouping | 1419 × 1383 | 0.565 | 1384 × 1145 | 0.694 |
+
+Nodes stranded in the top 10% band of the canvas (the "stray line" symptom) went from 21% to 3%
+in folder mode. Page errors 33 → 0, console warnings 820 → 1 (an intentional
+`wheelSensitivity` notice). Edge hover-tooltip and click-to-inspect re-verified working.
+
+**Verification tooling (kept, gitignored, NOT in package.json):**
+- `playwright` is installed in `node_modules` via `npm install --no-save playwright` +
+  `npx playwright install chromium`. Deliberately absent from `package.json` — a plain
+  `npm install`/`npm ci` will drop it, and the two scripts below then fail until it's
+  reinstalled. This is throwaway local tooling, not a project test dependency.
+- `_test_visualiser_serve.mjs` — starts `startVisualiserServer` directly, skipping the CLI's
+  `open()` browser auto-launch, so headless checks don't pop a window each run.
+- `_test_visualiser_check.mjs` — drives headless Chromium against `http://localhost:7842`,
+  screenshots all three grouping modes, and reports `window.__debobLayoutName`, node bounding
+  box/zoom/top-band concentration, structural-edge count and opacity, and every console message
+  and page error. Reaches the cytoscape instance via `document.getElementById('cy')._cyreg.cy`
+  (it's otherwise closure-scoped).
+- **Known gotcha, still true:** stopping a `debob visualise` background task via the agent
+  harness's task-stop mechanism does **not** reliably kill the Node child process on Windows.
+  Orphaned servers bound to 7842–7845 simultaneously, each serving a different stale build,
+  produce deeply confusing false negatives. Always `netstat -ano | grep ':784[0-9]'` +
+  `taskkill //F //PID <pid> //T`, and confirm the fresh process's own stdout
+  (`Graph visualiser running at http://localhost:<port>`) before pointing a test at a port.
+
+**Not done (deliberately deferred):** re-verification against the large repo the original
+hairball report came from (nextjs-monorepo-example, ~483 nodes, at
+`../Test-project-1/nextjs-monorepo-example`). Scoped to this repo's own graph by request.
+Worth doing before relying on this at that scale.
+
+---
+
 ## Technology Stack
 
 | Concern | Choice |
@@ -215,6 +306,13 @@ src/
                                        reads graph via readGraph(), serves GET /api/graph (JSON)
                                        and GET / (inline Cytoscape.js HTML — no build step)
                                        port auto-retry (7842–7846), returns { url, close }
+                                       layout: fcose — REQUIRES all three CDN script tags in
+                                         order (layout-base → cose-base → cytoscape-fcose);
+                                         falls back to plain cose if they fail to load
+                                       invisible 'edge-structural' anchors (file → its symbols)
+                                         keep 0-degree symbol nodes from wrecking the layout
+                                         inside compound region boxes — layout-only, never in
+                                         the /api/graph payload
 
 docs/
   architecture.md                   ← Full architecture reference: system overview, pipeline,
@@ -371,3 +469,13 @@ node dist/debob.js     # run compiled output
   see `resolveImportTarget` in `src/analyzers/typescript/index.ts`
 - Do NOT hand-edit the `<!-- DEBOB:START -->...<!-- DEBOB:END -->` block in the root `AGENTS.md`
   — it's regenerated by `debob init`/`debob update` on every run; edit the rest of the file freely
+- Do NOT load `cytoscape-fcose` (or `cose-bilkent`) from a single CDN `<script>` tag — they are
+  webpack UMD bundles with *externalised* dependencies. All three tags, in order:
+  `layout-base` → `cose-base` → `cytoscape-fcose`. A lone tag throws
+  `Cannot read properties of undefined (reading 'layoutBase')` and silently drops the visualiser
+  to the non-compound-aware `cose` fallback
+- Do NOT use `:not()` in a cytoscape selector — it isn't supported; select on the absence of a
+  data field instead (e.g. `'edge[type]'` to exclude the layout-only structural anchors)
+- Do NOT add the structural anchor edges to the `/api/graph` payload or to `EdgeType` — they are
+  a rendering-layer concern only and would corrupt the graph's "every edge is a real,
+  traceable inference" contract
