@@ -1,6 +1,6 @@
 import { WatsonXAI } from '@ibm-cloud/watsonx-ai'
 import { IamAuthenticator } from '@ibm-cloud/watsonx-ai/authentication'
-import type { LLMAdapter, LLMConfig, ModuleContext, DiffContext, QueryContext, TokenUsage } from '../adapter.js'
+import type { LLMAdapter, LLMConfig, ModuleContext, ModuleDescription, DiffContext, QueryContext, TokenUsage } from '../adapter.js'
 
 /**
  * Max time to wait for a single watsonx chat call before failing with a clear error.
@@ -16,21 +16,79 @@ const CHAT_TIMEOUT_MS = 60_000
  * Build a structured text prompt from a ModuleContext.
  * NEVER includes raw source code — only graph-derived metadata.
  */
+/** Layer names the model is allowed to return; anything else degrades to 'unclassified'. */
+const VALID_LAYERS = new Set(['presentation', 'business', 'data', 'config', 'test', 'infra'])
+
+/**
+ * Pull a `{ responsibility, layer }` object out of a model reply.
+ *
+ * Deliberately liberal, in the same spirit as the answers parser in engine/enrich.ts:
+ * models wrap JSON in code fences, prepend "Here is the JSON:", or nest it under a key.
+ * Being strict here would cost a whole module's enrichment over formatting.
+ * Returns null when nothing usable is present, so the caller can fall back.
+ */
+export function parseModuleDescription(raw: string): ModuleDescription | null {
+  const withoutFence = raw.replace(/```(?:json)?/gi, '').trim()
+  // Take the outermost braces, ignoring any lead-in prose the model added.
+  const start = withoutFence.indexOf('{')
+  const end = withoutFence.lastIndexOf('}')
+  if (start === -1 || end <= start) return null
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(withoutFence.slice(start, end + 1))
+  } catch {
+    return null
+  }
+
+  const record =
+    typeof parsed === 'object' && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : null
+  if (!record) return null
+
+  const responsibility = typeof record['responsibility'] === 'string' ? record['responsibility'].trim() : ''
+  if (responsibility === '') return null
+
+  const rawLayer = typeof record['layer'] === 'string' ? record['layer'].trim().toLowerCase() : ''
+  // A bad layer must not discard a good responsibility — the path heuristics and layer
+  // inheritance can still supply one, but nothing else can supply this text.
+  const layer = VALID_LAYERS.has(rawLayer) ? rawLayer : 'unclassified'
+
+  return { responsibility, layer }
+}
+
 function buildModulePrompt(ctx: ModuleContext): string {
-  const lines: string[] = [
-    `File: ${ctx.filePath}`,
+  const lines: string[] = [`File: ${ctx.filePath}`]
+
+  if (ctx.layer) lines.push(`Layer (heuristic): ${ctx.layer}`)
+
+  // The authors' own words about the module: the highest signal-per-token content available,
+  // and the thing a human reading the file would take the description from.
+  if (ctx.doc) lines.push('', 'Module documentation:', `  ${ctx.doc}`)
+
+  lines.push(
     '',
     `Imports (${ctx.imports.length}):`,
     ...ctx.imports.map(i => `  - ${i}`),
     '',
-    `Exports (${ctx.exports.length}):`,
-    ...ctx.exports.map(e => `  - ${e}`),
-    '',
     `Declarations (${ctx.declarations.length}):`,
-    ...ctx.declarations.map(d =>
-      `  - ${d.type} ${d.name}${d.startLine != null ? ` (line ${d.startLine})` : ''}`,
-    ),
-  ]
+    ...ctx.declarations.map(d => {
+      const where = d.startLine != null ? ` (line ${d.startLine})` : ''
+      const doc = d.doc ? ` — ${d.doc}` : ''
+      return `  - ${d.type} ${d.name}${where}${doc}`
+    }),
+  )
+
+  if (ctx.reExports && ctx.reExports.length > 0) {
+    lines.push('', `Re-exports from (${ctx.reExports.length}):`, ...ctx.reExports.map(e => `  - ${e}`))
+  }
+  if (ctx.calls && ctx.calls.length > 0) {
+    lines.push('', `Calls into (${ctx.calls.length}):`, ...ctx.calls.map(c => `  - ${c}`))
+  }
+  if (ctx.calledBy && ctx.calledBy.length > 0) {
+    lines.push('', `Called by (${ctx.calledBy.length}):`, ...ctx.calledBy.map(c => `  - ${c}`))
+  }
 
   if (ctx.gitStats) {
     lines.push(
@@ -85,6 +143,44 @@ export class WatsonxProvider implements LLMAdapter {
       authenticator: new IamAuthenticator({ apikey: config.apiKey }),
       serviceUrl: config.url,
     })
+  }
+
+  // ─── describeModule ─────────────────────────────────────────────────────────
+
+  /**
+   * Responsibility + layer in one call.
+   *
+   * `summarizeModule` and `classifyLayer` build byte-identical prompts, so asking them
+   * separately sent every module's context twice. Merging halves both the call count and
+   * the prompt spend, which is what pays for the richer context now being sent.
+   *
+   * Throws when the response can't be parsed, so the engine can fall back to the two
+   * separate calls for that one module rather than losing it.
+   */
+  async describeModule(context: ModuleContext, preamble?: string): Promise<ModuleDescription> {
+    const moduleText = buildModulePrompt(context)
+    const raw = await this._chat([
+      {
+        role: 'system',
+        content:
+          'You are a software architecture assistant. You are given structural facts about one ' +
+          'module of a codebase — its imports, exported symbols, declarations, what it calls and ' +
+          'is called by, and any documentation comments its authors wrote. You do not see the ' +
+          'implementation source.\n\n' +
+          (preamble ? `Project context:\n${preamble}\n\n` : '') +
+          'Reply with ONLY a JSON object, no prose and no code fence:\n' +
+          '{"responsibility": "<1-3 sentences on what this module is FOR — its role in the ' +
+          'system, not a restatement of its imports>", "layer": "<one of: presentation, ' +
+          'business, data, config, test, infra>"}',
+      },
+      { role: 'user', content: moduleText },
+    ])
+
+    const parsed = parseModuleDescription(raw)
+    if (!parsed) {
+      throw new Error('WatsonxProvider: describeModule response was not parseable JSON')
+    }
+    return parsed
   }
 
   // ─── summarizeModule ────────────────────────────────────────────────────────

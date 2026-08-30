@@ -12,6 +12,7 @@ import { openDb, readManifest, SqlitePersistenceAdapter, writeManifest } from '.
 import type { Manifest } from '../persistence/sqlite.js'
 import { writeAgentInstructions } from './agentInstructions.js'
 import { DEFAULT_ENRICH_CONCURRENCY, mapWithConcurrency } from './concurrency.js'
+import { buildProjectPreamble } from './preamble.js'
 import { SCHEMA_VERSION } from '../persistence/schema.js'
 import type { FileCacheEntry, GitFileStats, SemanticEnrichment } from '../persistence/interface.js'
 import type { LLMAdapter, TokenUsage } from '../llm/adapter.js'
@@ -152,6 +153,34 @@ function hasResponsibilityEnrichments(adapter: SqlitePersistenceAdapter): boolea
   return adapter
     .readSemanticEnrichments()
     .some(entry => entry.field === 'responsibility' && entry.value.trim() !== '')
+}
+
+/**
+ * Get a module's responsibility and layer, preferring the single merged call.
+ *
+ * `summarizeModule` and `classifyLayer` build byte-identical prompts, so asking separately
+ * transmitted every module's context twice. `describeModule` does it in one — but its reply
+ * has to be parsed as JSON, which a model can always botch. On any failure we fall back to
+ * the two original calls for that module alone: losing a module's enrichment to a stray
+ * code fence would be a far worse trade than spending the extra call.
+ */
+async function describeOneModule(
+  llm: LLMAdapter,
+  context: ReturnType<typeof buildModuleContext>,
+  preamble: string | undefined,
+): Promise<{ responsibility: string; layer: string }> {
+  if (llm.describeModule) {
+    try {
+      return await llm.describeModule(context, preamble)
+    } catch {
+      // Fall through to the two-call path.
+    }
+  }
+  const [responsibility, layer] = await Promise.all([
+    llm.summarizeModule(context),
+    llm.classifyLayer(context),
+  ])
+  return { responsibility, layer }
 }
 
 function makeStubNode(id: string): Node {
@@ -427,7 +456,12 @@ export async function runInit(
     const modelId = (llm as unknown as { modelId?: string }).modelId ?? 'unknown'
 
     const fileNodes = Array.from(graph.nodes.values()).filter(node => node.type === 'file')
-    log('semantic', `${fileNodes.length} file nodes, ${concurrency} calls in flight`)
+    const preamble = buildProjectPreamble(repoRoot, fileNodes.length)
+    log(
+      'semantic',
+      `${fileNodes.length} file nodes, ${concurrency} calls in flight` +
+        (preamble ? ', project preamble on' : ''),
+    )
 
     // Bounded-concurrency rather than one-at-a-time: the wall-clock cost here is almost
     // entirely network idle, so overlapping the round-trips is the single biggest speedup
@@ -435,10 +469,7 @@ export async function runInit(
     const perNode = await mapWithConcurrency(fileNodes, concurrency, async (node) => {
       try {
         const context = buildModuleContext(node, graph)
-        const [responsibility, layer] = await Promise.all([
-          llm.summarizeModule(context),
-          llm.classifyLayer(context),
-        ])
+        const { responsibility, layer } = await describeOneModule(llm, context, preamble)
         return [
           { nodeId: node.id, field: 'responsibility', value: responsibility, llmProvider: provider, modelId, createdAt: now },
           { nodeId: node.id, field: 'layer', value: layer, llmProvider: provider, modelId, createdAt: now },
@@ -784,15 +815,19 @@ export async function runUpdate(
     const staleNodes = Array.from(graph.nodes.values()).filter(
       node => node.type === 'file' && reanalyzedIds.has(node.id),
     )
-    log('semantic', `${staleNodes.length} re-analyzed file nodes, ${concurrency} calls in flight`)
+    // Sized against the whole repo, not just the re-analyzed slice: the preamble's
+    // affordability depends on how many modules the project has, not how many changed.
+    const preamble = buildProjectPreamble(repoRoot, files.length)
+    log(
+      'semantic',
+      `${staleNodes.length} re-analyzed file nodes, ${concurrency} calls in flight` +
+        (preamble ? ', project preamble on' : ''),
+    )
 
     const perNode = await mapWithConcurrency(staleNodes, concurrency, async (node) => {
       try {
         const context = buildModuleContext(node, graph)
-        const [responsibility, layer] = await Promise.all([
-          llm.summarizeModule(context),
-          llm.classifyLayer(context),
-        ])
+        const { responsibility, layer } = await describeOneModule(llm, context, preamble)
         return [
           { nodeId: node.id, field: 'responsibility', value: responsibility, llmProvider: provider, modelId, createdAt: now },
           { nodeId: node.id, field: 'layer', value: layer, llmProvider: provider, modelId, createdAt: now },

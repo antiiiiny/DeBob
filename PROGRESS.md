@@ -22,6 +22,61 @@ The LLM **never receives the full repository**. The graph + query layer assemble
 
 ---
 
+## Enrichment Quality (Sub-Task N) — ✅ done, measured on two repos
+
+A head-to-head showed DeBob winning on speed and cost but **losing on quality**: a cold Claude
+agent with no DeBob access described 30 modules in 105s / 86,885 tokens, versus DeBob's 44 in
+21s / 34,013 — but the agent's text was richer, e.g. `builder.ts` as *"stubbing or dropping
+dangling edge endpoints"*. The cause was input starvation: `buildModulePrompt` sent only a file
+path, import specifiers, declaration names and churn.
+
+**Four defects and one inefficiency found:**
+1. **`Exports` was wrong on every call.** `getFileExports` reads `exports` edges, which only
+   exist for *re-exports*. A file doing `export function buildGraph` was described to the model
+   as **"Exports (0)"**. Renamed to `reExports` and documented for what it actually is.
+2. **The call graph was computed and ignored** — 160 `calls` edges never reached `ModuleContext`.
+3. **`buildModuleContext` existed twice.** `src/llm/context.ts` and `src/query/index.ts` held
+   independent implementations; only the query one was live and **nothing imported the other**.
+   PROGRESS.md described it as a re-export, which it was not. The dead file is deleted; the live
+   copy stays in `query/` because moving it the other way would create an import cycle.
+4. **Dotted filenames never resolved.** `./fetch-poems.api` makes `extname()` return `.api`, so
+   the extensionless probe was skipped and every such import became a phantom stub. This is the
+   standard `*.api.ts` / `*.config.ts` / `*.types.ts` convention — **found only by testing the
+   second repo**, where it produced 13 phantom nodes (now 2).
+5. **The same context was sent twice per module.** `summarizeModule` and `classifyLayer` built
+   byte-identical prompts. Merged into `describeModule`, which returns both fields in one call.
+
+**What landed:** `describeModule` (with a liberal JSON parser and per-module fallback to the two
+old calls); `reExports` fix plus `calls`/`calledBy`/`layer`/`doc` in `ModuleContext`; doc-comment
+extraction in the TS analyzer (file-level + JSDoc on declarations, capped at 500/300 chars with a
+2,000-char per-module budget); and a README-derived project preamble in `src/engine/preamble.ts`.
+
+**The merge paid for the quality.** Measured on this repo:
+
+| | Before | After |
+|---|---|---|
+| Calls | 88 | **46** |
+| Prompt tokens | 22,416 | 27,478 |
+| Completion tokens | 11,597 | **6,484** |
+| **Total** | **34,013** | **33,962** |
+
+Total spend is flat to within 51 tokens, slightly faster (21s → 19s), with far richer input.
+Average summary length 144 → 219 chars. The reduction ratio drops 7.1× → 6.0× **only because it
+is computed from prompt tokens**; total cost did not move.
+
+⚠️ **The preamble is adaptive, and must stay that way.** It is paid on *every* call, so its cost
+scales with module count while its benefit does not. DeBob has 26 source files; the Next.js
+monorepo has 243. A 100-token preamble there would cost ~24,000 tokens against a repo whose
+entire source is ~65,000. `buildProjectPreamble` returns undefined above 100 modules.
+
+**Cross-repo validation** (`Test-project-1/nextjs-monorepo-example`, 338 files, 749 nodes):
+orphan symbols **0**, phantom stubs **13 → 2** after defect 4, arrow-function extraction confirmed
+working at scale (121 function + 176 variable nodes from React/Next code that produced *nothing*
+before Sub-Task K). Only **11%** of its nodes carry a doc comment versus DeBob's heavy commenting
+— so the Part 3 quality gain is real here but much weaker there, exactly as predicted.
+
+---
+
 ## Token Accounting (Sub-Task M) — ✅ done, measured
 
 DeBob's central claim is "the LLM never receives the repository". That was asserted in prose
@@ -386,7 +441,8 @@ Worth doing before relying on this at that scale.
 | J | Python analyzer, opt-in post-commit hook, team-sharing docs | ✅ done |
 | K | Graph truth (`declares`/`calls`/`instantiates`, arrow fns, methods, resolved heritage, layer inheritance, authoritative `init`) + watsonx responsibility in the visualiser + vitest | ✅ done |
 | L | Concurrent enrichment (`--concurrency`) + `debob enrich` export/import for API-key-free agent enrichment + AGENTS.md/skill discovery | ✅ done (141s → 21s measured) |
-| M | Token accounting: exact provider usage + not-sent counterfactual, printed by every command | ✅ done (~7.1× measured) |
+| M | Token accounting: exact provider usage + not-sent counterfactual, printed by every command | ✅ done (~6.0× measured) |
+| N | Enrichment quality: merged describeModule call, fixed reExports, call graph + doc comments + README preamble in context, dotted-filename resolution | ✅ done (flat tokens, richer output; validated on 2 repos) |
 
 ---
 

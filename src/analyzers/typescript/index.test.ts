@@ -173,3 +173,58 @@ describe('imports', () => {
     expect(node(r, 'pkg::@ibm-cloud/watsonx-ai')).toBeDefined()
   })
 })
+
+describe('doc comments', () => {
+  it('captures the module-level leading comment', () => {
+    const r = analyze([
+      '/**',
+      ' * Assembles the graph from analyzer output.',
+      ' */',
+      "import { x } from './y.js'",
+    ])
+    expect(node(r, FILE)?.metadata?.['doc']).toBe('Assembles the graph from analyzer output.')
+  })
+
+  it('attaches a JSDoc block to the exported symbol it precedes', () => {
+    const r = analyze([
+      '/** Builds the graph, stubbing dangling edge endpoints. */',
+      'export function buildGraph() {}',
+    ])
+    expect(node(r, `${FILE}::buildGraph`)?.metadata?.['doc']).toBe(
+      'Builds the graph, stubbing dangling edge endpoints.',
+    )
+  })
+
+  it('attaches a line comment to an arrow-function const', () => {
+    const r = analyze(['// Overlaps enrichment round-trips.', 'export const run = () => 1'])
+    expect(node(r, `${FILE}::run`)?.metadata?.['doc']).toBe('Overlaps enrichment round-trips.')
+  })
+
+  it('leaves an undocumented symbol with no doc', () => {
+    const r = analyze(['export function bare() {}'])
+    expect(node(r, `${FILE}::bare`)?.metadata?.['doc']).toBeUndefined()
+  })
+
+  it('does not mistake a preceding declaration for a doc comment', () => {
+    const r = analyze(['export function first() {}', 'export function second() {}'])
+    expect(node(r, `${FILE}::second`)?.metadata?.['doc']).toBeUndefined()
+  })
+
+  it('truncates an over-long symbol doc rather than sending it whole', () => {
+    const r = analyze(['/** ' + 'x'.repeat(600) + ' */', 'export function big() {}'])
+    const doc = node(r, `${FILE}::big`)?.metadata?.['doc'] as string
+    expect(doc.length).toBeLessThanOrEqual(301)
+    expect(doc.endsWith('…')).toBe(true)
+  })
+
+  it('ignores tooling directives, which say nothing about purpose', () => {
+    const r = analyze(['/* eslint-disable no-console */', 'export function noisy() {}'])
+    expect(node(r, `${FILE}::noisy`)?.metadata?.['doc']).toBeUndefined()
+  })
+
+  it('handles a file with no comments at all', () => {
+    const r = analyze(['export const a = 1'])
+    expect(node(r, FILE)?.metadata?.['doc']).toBeUndefined()
+    expect(r.nodes.length).toBeGreaterThan(0)
+  })
+})

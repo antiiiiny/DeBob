@@ -94,7 +94,13 @@ function resolveImportTarget(
       }
     }
 
-    if (!ext) {
+    // Probe when the specifier has no extension — and also when it has one we don't
+    // recognise as a compiled extension. `./fetch-poems.api` makes extname() return
+    // '.api', which is really part of the filename (`fetch-poems.api.ts`), a common
+    // convention in Next.js/modern TS codebases (`*.api.ts`, `*.config.ts`, `*.types.ts`).
+    // Treating that as a real extension skipped the probe entirely and produced a phantom
+    // stub node per import — 13 of them on the nextjs-monorepo-example test repo.
+    if (!ext || !COMPILED_TO_SOURCE_EXT[ext]) {
       for (const probeExt of ['.ts', '.tsx', '.js', '.jsx', '.mjs', '/index.ts', '/index.js']) {
         if (existsSync(resolve(repoRoot, rel + probeExt))) {
           return { id: rel + probeExt, isPackage: false }
@@ -128,6 +134,56 @@ function walkTree(node: SyntaxNode, visitor: (n: SyntaxNode) => boolean | void):
   for (const child of node.children) {
     walkTree(child, visitor)
   }
+}
+
+// ─── Doc Comments ─────────────────────────────────────────────────────────────
+
+/**
+ * Caps on extracted documentation. These bound what enrichment sends to the model:
+ * comments are ~28% of this codebase by volume, so uncapped extraction would undo the
+ * token efficiency the graph exists to provide. Sized so a typical JSDoc summary plus a
+ * short step list survives, while an essay gets trimmed.
+ */
+const FILE_DOC_CAP = 500
+const SYMBOL_DOC_CAP = 300
+/** Total across all symbol docs in one file, so a heavily-documented module can't dominate. */
+const MODULE_DOC_BUDGET = 2000
+
+/** Strip comment syntax and collapse whitespace, so the model gets prose rather than markup. */
+function cleanDocComment(raw: string, cap: number): string | undefined {
+  const text = raw
+    .replace(/^\/\*\*?/, '')
+    .replace(/\*\/$/, '')
+    .split('\n')
+    .map(line => line.replace(/^\s*(\*+|\/\/)\s?/, '').trim())
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (text === '') return undefined
+  // Skip machine-oriented noise that tells a reader nothing about purpose.
+  if (/^(eslint|prettier|@ts-|istanbul|c8|prettier-ignore)/i.test(text)) return undefined
+  return text.length > cap ? text.slice(0, cap).trimEnd() + '…' : text
+}
+
+/** The file's own leading comment: the first top-level node, when it is a comment. */
+function fileDocComment(root: SyntaxNode): string | undefined {
+  const first = root.children[0]
+  if (!first || first.type !== 'comment') return undefined
+  return cleanDocComment(first.text, FILE_DOC_CAP)
+}
+
+/**
+ * The doc comment immediately preceding a declaration.
+ *
+ * An exported declaration is wrapped in an `export_statement`, and the comment is a sibling
+ * of *that*, not of the declaration — so walk up to the export wrapper before looking back.
+ */
+function docCommentFor(node: SyntaxNode): string | undefined {
+  const anchor = node.parent?.type === 'export_statement' ? node.parent : node
+  const previous = anchor.previousSibling
+  if (!previous || previous.type !== 'comment') return undefined
+  return cleanDocComment(previous.text, SYMBOL_DOC_CAP)
 }
 
 /** Method symbols are qualified by their class: `Foo.bar`, never a bare `bar`. */
@@ -265,7 +321,7 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
   readonly extensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts']
   // Bumped from ts-1.0: file_cache compares this, so a bump makes `debob update`
   // re-analyze every file with the new extraction.
-  readonly version = 'ts-1.1'
+  readonly version = 'ts-1.3'
 
   private readonly tsParser: Parser
   private readonly tsxParser: Parser
@@ -311,6 +367,7 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
     const layer = inferLayer(filePath)
 
     // ── File node (always emitted) ────────────────────────────────────────
+    const fileDoc = fileDocComment(tree.rootNode)
     nodes.push({
       id: filePath,
       type: 'file',
@@ -319,7 +376,19 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
       confidence: 1.0,
       dataSource: 'static',
       layer,
+      ...(fileDoc ? { metadata: { doc: fileDoc } } : {}),
     })
+
+    // Symbol docs draw from a shared per-file budget, spent in source order. Without it a
+    // single exhaustively-documented module could crowd out every other module's context.
+    let docBudget = MODULE_DOC_BUDGET
+    const takeDoc = (node: SyntaxNode): { metadata: { doc: string } } | undefined => {
+      if (docBudget <= 0) return undefined
+      const doc = docCommentFor(node)
+      if (!doc) return undefined
+      docBudget -= doc.length
+      return { metadata: { doc } }
+    }
 
     const ensurePackageNode = (pkgId: string): void => {
       if (!packageNodes.has(pkgId)) {
@@ -456,6 +525,7 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
             confidence: 1.0,
             dataSource: 'static',
             layer,
+            ...takeDoc(node),
           })
           addDeclares(filePath, nodeId)
           break
@@ -488,6 +558,8 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
               confidence: 1.0,
               dataSource: 'static',
               layer,
+              // The comment sits before the whole declaration, not the individual declarator.
+              ...takeDoc(node),
             })
             addDeclares(filePath, nodeId)
           }
@@ -511,6 +583,7 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
             confidence: 1.0,
             dataSource: 'static',
             layer,
+            ...takeDoc(node),
           })
           // Owned by its class, not the file — the containment chain stays real.
           addDeclares(symbolNodeId(filePath, className), nodeId)
@@ -559,6 +632,7 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
             confidence: 1.0,
             dataSource: 'static',
             layer,
+            ...takeDoc(node),
           })
           addDeclares(filePath, nodeId)
           // Heritage clauses: class_heritage contains extends_clause + implements_clause.
@@ -619,6 +693,7 @@ export class TypeScriptAnalyzer implements LanguageAnalyzer {
             confidence: 1.0,
             dataSource: 'static',
             layer,
+            ...takeDoc(node),
           })
           addDeclares(filePath, nodeId)
           // extends_type_clause: interface Foo extends Bar, Baz — resolved, not raw text.

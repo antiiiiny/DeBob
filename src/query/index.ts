@@ -84,20 +84,36 @@ export function buildModuleContext(node: Node, graph: Graph): ModuleContext {
   const filePath = node.filePath
 
   const imports = getFileImports(graph, filePath)
-  const exports = getFileExports(graph, filePath)
+  const reExports = getFileExports(graph, filePath)
 
   // Collect symbol declarations that belong to this file
   const declarations: ModuleContext['declarations'] = []
+  const ownSymbolIds = new Set<string>()
   for (const n of graph.nodes.values()) {
     if (
       n.filePath === filePath &&
       (n.type === 'function' || n.type === 'class' || n.type === 'interface' || n.type === 'variable')
     ) {
+      ownSymbolIds.add(n.id)
       declarations.push({
         name: n.name,
         type: n.type as 'function' | 'class' | 'interface' | 'variable',
         startLine: n.startLine,
+        doc: typeof n.metadata?.['doc'] === 'string' ? (n.metadata['doc'] as string) : undefined,
       })
+    }
+  }
+
+  // The call graph is deterministic and already computed, but nothing was reading it here.
+  // "Calls X; is called by Y" says far more about a module's purpose than its imports do.
+  const calls = new Set<string>()
+  const calledBy = new Set<string>()
+  for (const edge of graph.edges) {
+    if (edge.type !== 'calls' && edge.type !== 'instantiates') continue
+    if (ownSymbolIds.has(edge.source) && !ownSymbolIds.has(edge.target)) {
+      calls.add(readableSymbol(edge.target))
+    } else if (ownSymbolIds.has(edge.target) && !ownSymbolIds.has(edge.source)) {
+      calledBy.add(readableSymbol(edge.source))
     }
   }
 
@@ -116,7 +132,34 @@ export function buildModuleContext(node: Node, graph: Graph): ModuleContext {
       }
     : undefined
 
-  return { filePath, imports, exports, declarations, gitStats }
+  return {
+    filePath,
+    imports,
+    reExports,
+    declarations,
+    layer: node.layer,
+    // Capped: a hub module can be called from dozens of places, and an unbounded list
+    // would crowd out everything else in the prompt for no extra insight.
+    calls: capped(calls),
+    calledBy: capped(calledBy),
+    doc: typeof meta?.['doc'] === 'string' ? (meta['doc'] as string) : undefined,
+    gitStats,
+  }
+}
+
+/** Max entries rendered for the calls / calledBy lists. */
+const MAX_CALL_ENTRIES = 12
+
+function capped(values: Set<string>): string[] | undefined {
+  if (values.size === 0) return undefined
+  return Array.from(values).slice(0, MAX_CALL_ENTRIES)
+}
+
+/** `src/graph/builder.ts::buildGraph` reads better to a model as `buildGraph (src/graph/builder.ts)`. */
+function readableSymbol(nodeId: string): string {
+  const separator = nodeId.indexOf('::')
+  if (separator === -1) return nodeId
+  return `${nodeId.slice(separator + 2)} (${nodeId.slice(0, separator)})`
 }
 
 // ─── Relevant-Node Retrieval (for `debob explain`) ────────────────────────────

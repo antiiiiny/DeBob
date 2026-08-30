@@ -1,0 +1,12 @@
+{
+  "version": "0.1.0",
+  "schemaVersion": 1,
+  "initAt": "2026-08-30T07:03:06.752Z",
+  "repoPath": "C:\\Antony\\IBM-HACK\\debob",
+  "nodeCount": 299,
+  "edgeCount": 603,
+  "fileCount": 46,
+  "commitCount": 21,
+  "headCommit": "44bfca3b6fc1c0db526d60c25d43a8e5f372fdf7",
+  "semantic": true
+}

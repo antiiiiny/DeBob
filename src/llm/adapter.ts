@@ -27,14 +27,32 @@ export interface ModuleContext {
   filePath: string
   /** List of module specifiers this file imports (resolved or raw). */
   imports: string[]
-  /** List of exported symbol names. */
-  exports: string[]
+  /**
+   * Module paths this file *re-exports* from (`export { x } from './y.js'`).
+   *
+   * Named `reExports`, not `exports`, because that is genuinely all it holds: it is derived
+   * from `exports` edges, which the analyzers only emit for re-export statements. It was
+   * previously called `exports` and documented as "exported symbol names", so a file doing
+   * `export function foo()` was described to the model as having zero exports. Declared
+   * symbols are in `declarations`.
+   */
+  reExports: string[]
   /** Declarations found in this file (functions, classes, interfaces). */
   declarations: Array<{
     name: string
     type: 'function' | 'class' | 'interface' | 'variable'
     startLine?: number
+    /** Author-written doc comment for this symbol, when it has one. */
+    doc?: string
   }>
+  /** Architectural layer, if one has been inferred or assigned. */
+  layer?: string
+  /** Symbols elsewhere in the repo that this module's code calls. */
+  calls?: string[]
+  /** Symbols elsewhere in the repo that call into this module. */
+  calledBy?: string[]
+  /** The module's own leading doc comment, when it has one. */
+  doc?: string
   /** Optional git stats for context (churn, authors). */
   gitStats?: Pick<GitFileStats, 'churnScore' | 'authorCount' | 'lastModifiedAt'>
 }
@@ -67,6 +85,14 @@ export interface QueryContext {
   relevantEdges: Graph['edges']
 }
 
+/** Both semantic fields for one module, produced by a single `describeModule` call. */
+export interface ModuleDescription {
+  /** One to three sentences on what the module is for. */
+  responsibility: string
+  /** An ArchitecturalLayer name, or 'unclassified' when the model gave nothing usable. */
+  layer: string
+}
+
 // ─── Token Usage ──────────────────────────────────────────────────────────────
 
 /**
@@ -97,7 +123,7 @@ export interface TokenUsage {
 /**
  * Provider-agnostic LLM adapter interface.
  *
- * The LLM is NEVER given the full repository. The context builder (src/llm/context.ts)
+ * The LLM is NEVER given the full repository. The context builder (buildModuleContext in src/query/index.ts)
  * assembles targeted slices from graph queries, and only those slices are passed here.
  *
  * V1 provider: IBM watsonx (src/llm/providers/watsonx.ts)
@@ -161,6 +187,17 @@ export interface LLMAdapter {
    * @returns Human-readable answer grounded in graph data.
    */
   answerQuestion(context: QueryContext): Promise<string>
+
+  /**
+   * Responsibility and layer for one module in a single call.
+   *
+   * `summarizeModule` and `classifyLayer` send byte-identical context, so asking them
+   * separately transmitted every module's slice twice — about half of all prompt tokens
+   * were a duplicate. Providers that implement this halve both call count and prompt spend;
+   * callers fall back to the two separate methods when it is absent or its response can't
+   * be parsed.
+   */
+  describeModule?(context: ModuleContext, preamble?: string): Promise<ModuleDescription>
 
   /**
    * Cumulative token usage across every call this adapter instance has made.

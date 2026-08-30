@@ -4,9 +4,11 @@ dist/
 # Dependencies
 node_modules/
 
-# DeBob knowledge graph (generated artefact -- commit only if you want to share context)
-# Remove this line if you want to commit .debob/ to the repo
-.debob/
+# DeBob knowledge graph -- deliberately COMMITTED so anyone cloning this repo can run
+# `debob visualise` immediately, with no API key and no IBM Cloud account. It is verified to
+# contain no author emails, credentials or raw source. See docs/bob-sessions/README.md.
+# The enrichment export file is a transient work product of `debob enrich --export`, not context.
+.debob/enrichment.json
 .claude/
 
 # Logs

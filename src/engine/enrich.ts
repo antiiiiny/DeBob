@@ -128,7 +128,7 @@ export async function runEnrichExport(
         nodeId: node.id,
         filePath: context.filePath,
         imports: context.imports,
-        exports: context.exports,
+        exports: context.reExports,
         declarations: context.declarations,
         gitStats: context.gitStats,
         currentLayer: node.layer,

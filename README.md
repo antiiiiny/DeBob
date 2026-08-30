@@ -6,7 +6,7 @@ DeBob is a persistent repository-understanding and context system for AI coding 
 
 It scans any Git repository and builds `.debob/context.db` — a SQLite knowledge graph of files, symbols, imports, Git history, and optional LLM-inferred architectural context. AI agents query the graph instead of reading raw source files.
 
-**The LLM never receives the repository**, and DeBob measures that rather than asserting it. Enriching DeBob's own 44 modules sent **22,416 prompt tokens** (exact, reported by watsonx) against an estimated **~159,000** for the 0.61 MB of source it describes — a **~7.1× reduction**. Every run prints its own figure.
+**The LLM never receives implementation source** — only a graph-derived slice: imports, exported symbols, the call graph, git churn, and the documentation comments the authors themselves wrote. DeBob measures this rather than asserting it. Enriching DeBob's own 46 modules sent **27,478 prompt tokens** (exact, reported by watsonx) against an estimated **~165,000** for the 0.63 MB of source it describes — a **~6.0× reduction**. Every run prints its own figure.
 
 ---
 
