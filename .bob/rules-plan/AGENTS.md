@@ -4,7 +4,7 @@ This file provides guidance to agents when working with code in this repository.
 
 ## Implementation Sequence
 
-All original sub-tasks 1–11 are **complete**. Sub-tasks A–E from `debob-next-plan.md` are also **all complete**:
+All original sub-tasks 1–11 are **complete**. Sub-tasks A–E from `docs/planning/debob-next-plan.md` are also **all complete**:
 ```
 A  runUpdate + debob update CLI     → complete
 B  Layer propagation                → complete
@@ -13,7 +13,7 @@ D  debob review                     → complete
 E  Rules/AGENTS.md cleanup          → complete
 ```
 
-See `debob-impl-plan.md` for status and specs.
+See `docs/planning/debob-impl-plan.md` for status and specs.
 
 ## DeBob Graph Query Skill
 

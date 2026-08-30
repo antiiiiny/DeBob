@@ -27,7 +27,7 @@ No test framework is configured yet. Verification is done by writing `_test_<n>.
 
 The TypeScript grammar uses **`import_statement`** (NOT `import_declaration`). Other key names: `export_statement`, `class_declaration`, `class_heritage`, `extends_clause`, `implements_clause`, `interface_declaration`, `extends_type_clause`, `function_declaration`.
 
-The Python grammar (`src/analyzers/python/index.ts`) uses `import_statement` / `import_from_statement`, with relative imports nested under `relative_import` (`import_prefix` = the dots, optional `dotted_name` = submodule). `function_definition` / `class_definition` both expose a proper `name` field. Verify grammar node names empirically (a throwaway AST-dump script against the `.wasm` grammar) before trusting assumptions — this project's own TS analyzer had a real, undetected import-resolution bug from an incorrect assumption about extension probing (see `debob-plan.md` Sub-Task H).
+The Python grammar (`src/analyzers/python/index.ts`) uses `import_statement` / `import_from_statement`, with relative imports nested under `relative_import` (`import_prefix` = the dots, optional `dotted_name` = submodule). `function_definition` / `class_definition` both expose a proper `name` field. Verify grammar node names empirically (a throwaway AST-dump script against the `.wasm` grammar) before trusting assumptions — this project's own TS analyzer had a real, undetected import-resolution bug from an incorrect assumption about extension probing (see `docs/planning/debob-plan.md` Sub-Task H).
 
 ## sql.js Persistence Pattern
 
@@ -56,13 +56,13 @@ Author emails are SHA-256 hashed before storage. Raw emails, API keys, tokens, a
 
 ## Current State
 
-All of Sub-Tasks 1–11 and A–J (see `debob-plan.md` and `debob-impl-plan.md`) are implemented:
+All of Sub-Tasks 1–11 and A–J (see `docs/planning/debob-plan.md` and `docs/planning/debob-impl-plan.md`) are implemented:
 scanner, TS/JS + Python analyzers, git extractor, graph builder, engine orchestrator
 (`init`/`update`), persistence, `debob review`, `debob explain`, and the `AGENTS.md`
 auto-instructions mechanism that regenerates the block below on every `init`/`update`. Nothing
 described in this file is a placeholder.
 
-See `PROGRESS.md` for the current file inventory and `debob-plan.md` for full sub-task specs.
+See `PROGRESS.md` for the current file inventory and `docs/planning/debob-plan.md` for full sub-task specs.
 
 ## Code Style
 

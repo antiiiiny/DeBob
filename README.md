@@ -10,6 +10,27 @@ It scans any Git repository and builds `.debob/context.db` — a SQLite knowledg
 
 ---
 
+## Try It In 60 Seconds — No API Key Needed
+
+This repository ships its own knowledge graph at `.debob/context.db`, already enriched by
+watsonx.ai. You can explore it without an IBM Cloud account, a `.env` file, or any credentials:
+
+```bash
+git clone https://github.com/antiiiiny/DeBob.git
+cd DeBob
+npm install
+npm run build
+node dist/bin/debob.js visualise
+```
+
+That opens the interactive graph on `http://localhost:7842` — 299 nodes and 603 edges across 46
+files, with watsonx-written responsibility summaries attached. Click any node with a cyan halo to
+read its summary and see the model that produced it.
+
+Everything below is for pointing DeBob at a repository of your own.
+
+---
+
 ## Using DeBob in a New Repository
 
 ### Step 1 — Build the graph

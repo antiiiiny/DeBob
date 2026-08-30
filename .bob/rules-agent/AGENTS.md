@@ -6,7 +6,7 @@ This file provides guidance to agents when working with code in this repository.
 
 - Run `npm run typecheck` and confirm it passes. All sub-tasks must leave typecheck green.
 - Read `PROGRESS.md` to see which sub-tasks are done and what's next.
-- `debob-impl-plan.md` tracks the active A–E sub-tasks. `debob-next-plan.md` has the full specs.
+- `docs/planning/debob-impl-plan.md` tracks the active A–E sub-tasks. `docs/planning/debob-next-plan.md` has the full specs.
 - Use `.bob/skills/debob-query/SKILL.md` to query the knowledge graph from chat when needed.
 
 ## Non-Obvious Coding Rules
@@ -34,6 +34,7 @@ Write `_test_<n>.mjs` at repo root, run with `npx tsx _test_<n>.mjs`, delete aft
 - Do NOT add `better-sqlite3` or native `tree-sitter` (Windows incompatibility)
 - Do NOT store raw emails, API keys, or secrets in `.debob/`
 - Do NOT send full source file contents to the LLM — only `ModuleContext` slices
-- Do NOT implement `debob explain` — this is out of scope for V1
+- ~~Do NOT implement `debob explain`~~ — descoped from V1, then delivered in commit `6600d25`. It
+  lives in `src/engine/explain.ts` and answers free-form questions from graph slices only.
 - Do NOT use the deprecated `text/generation` REST endpoint — use `WatsonxProvider` (SDK chat API)
 - Do NOT read `WATSONX_ENDPOINT` — the correct env var is `WATSONX_URL`

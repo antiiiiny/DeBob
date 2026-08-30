@@ -5,9 +5,9 @@ This file provides guidance to agents when working with code in this repository.
 ## Key Documentation Files
 
 - `PROGRESS.md` — primary handoff doc; current sub-task status + complete file inventory + implementation notes
-- `debob-plan.md` — original architecture plan (sub-tasks 1–11, all complete)
-- `debob-next-plan.md` — next-phase spec (sub-tasks A–E)
-- `debob-impl-plan.md` — implementation plan tracking A–E progress
+- `docs/planning/debob-plan.md` — original architecture plan (sub-tasks 1–11, all complete)
+- `docs/planning/debob-next-plan.md` — next-phase spec (sub-tasks A–E)
+- `docs/planning/debob-impl-plan.md` — implementation plan tracking A–E progress
 - `src/persistence/schema.ts` — SQLite schema (6 tables) with comments explaining each
 - `src/graph/types.ts` — all graph type definitions with explanatory comments
 
@@ -24,7 +24,7 @@ Activate this skill when answering architecture, dependency, or file-responsibil
 
 **`file_cache` table drives incremental updates** — `debob update` re-analyzes only files whose `contentHash`, `analyzerVersion`, or `schemaVersion` has changed. Unchanged files are skipped.
 
-**All sub-tasks 1–11 are complete.** Sub-tasks A–E from `debob-next-plan.md` extend the system.
+**All sub-tasks 1–11 are complete.** Sub-tasks A–E from `docs/planning/debob-next-plan.md` extend the system.
 
 **The CLI `bin/debob.ts`** implements: `init`, `update`, `visualise`, and `review` (all complete — no stubs remaining).
 
