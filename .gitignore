@@ -31,8 +31,6 @@ Thumbs.db
 # TypeScript incremental cache
 *.tsbuildinfo
 
-# Bob (AI assistant) sessions
-bob_sessions/
 
 # Temporary test/scratch files (ignored by git)
 _test_*.mjs
