@@ -18,7 +18,7 @@ const BLOCK_END = '<!-- DEBOB:END -->'
 function buildBlock(manifest: Manifest): string {
   const enrichmentNote = manifest.semantic
     ? 'static analysis, Git history, and LLM semantic enrichment (responsibilities, architectural layers)'
-    : 'static analysis and Git history (no LLM enrichment yet — run `npx debob update --semantic` for responsibility/layer data)'
+    : 'static analysis and Git history (no semantic enrichment yet — see "Enriching the graph" below)'
 
   return [
     BLOCK_START,
@@ -50,6 +50,31 @@ function buildBlock(manifest: Manifest): string {
     '```',
     '',
     'If they differ, run `npx debob update` first (add `--semantic` to also refresh LLM enrichments).',
+    '',
+    '## Enriching the graph (you can do this yourself — no API key)',
+    '',
+    'The structural graph is built deterministically, but *what each module is for* and *which',
+    'architectural layer it belongs to* are semantic judgements. Normally those come from a',
+    'hosted model via `--semantic`, which needs watsonx credentials. If there are none — or you',
+    'are asked to enrich, describe the modules, or classify the layers — do it yourself:',
+    '',
+    '```bash',
+    '# 1. Export the outstanding work (skips modules already enriched)',
+    'npx debob enrich --export .debob/enrichment.json',
+    '',
+    '# 2. Read that file. For each entry in "tasks", write an answer object:',
+    '#      { "nodeId": <copied verbatim>, "responsibility": <1-3 sentences>, "layer": <one of validLayers> }',
+    '#    Save the array to .debob/enrichment-answers.json',
+    '#    Say what the module is FOR, not what it imports — the graph already knows its imports.',
+    '#    Prefer the supplied graph facts; open the source file only if they are genuinely insufficient.',
+    '',
+    '# 3. Import them',
+    'npx debob enrich --import .debob/enrichment-answers.json',
+    '```',
+    '',
+    'The result lands in the same `semantic_enrichments` table as `--semantic`, tagged',
+    '`llmProvider: "agent"`. Check the "Skipped" list in the import output — entries there mean a',
+    'bad `nodeId` or an invalid `layer`, and should be fixed and re-imported.',
     '',
     'For advanced/raw graph queries the CLI doesn\'t cover, see `.bob/skills/debob-query/SKILL.md`.',
     '',

@@ -67,6 +67,31 @@ export interface QueryContext {
   relevantEdges: Graph['edges']
 }
 
+// ─── Token Usage ──────────────────────────────────────────────────────────────
+
+/**
+ * Cumulative token spend for one adapter instance.
+ *
+ * These are counts reported by the provider, not local estimates — they are the evidence
+ * for DeBob's central claim that the LLM receives targeted graph slices rather than the
+ * repository. Compare `promptTokens` against the byte size of the source that was *not*
+ * sent (see `InitResult.sourceBytes`).
+ */
+export interface TokenUsage {
+  /** Tokens in the prompts DeBob sent — i.e. the size of the context slices. */
+  promptTokens: number
+  /**
+   * Tokens the model generated. For reasoning-capable models (e.g. `openai/gpt-oss-120b`)
+   * this is dominated by hidden `reasoning_content` and is NOT a measure of answer length:
+   * a two-character reply was measured at 51 completion tokens.
+   */
+  completionTokens: number
+  /** Provider-reported total. Not assumed to equal prompt + completion. */
+  totalTokens: number
+  /** Number of provider calls that reported usage. */
+  callCount: number
+}
+
 // ─── LLM Adapter Interface ────────────────────────────────────────────────────
 
 /**
@@ -136,4 +161,13 @@ export interface LLMAdapter {
    * @returns Human-readable answer grounded in graph data.
    */
   answerQuestion(context: QueryContext): Promise<string>
+
+  /**
+   * Cumulative token usage across every call this adapter instance has made.
+   *
+   * Optional by design: a provider that cannot report usage should omit this rather than
+   * fabricate numbers. Callers must treat `undefined` as "not measurable" and report
+   * nothing, never zero.
+   */
+  getUsage?(): TokenUsage | undefined
 }

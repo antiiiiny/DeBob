@@ -22,6 +22,128 @@ The LLM **never receives the full repository**. The graph + query layer assemble
 
 ---
 
+## Token Accounting (Sub-Task M) — ✅ done, measured
+
+DeBob's central claim is "the LLM never receives the repository". That was asserted in prose
+with no number behind it — the weakest kind of efficiency claim to put in front of a judge.
+Every watsonx `textChat` response already carries an exact usage block; `_chat()` read
+`choices` and `finish_reason` and threw `usage` away.
+
+**What landed:**
+- `TokenUsage { promptTokens, completionTokens, totalTokens, callCount }` in
+  `src/llm/adapter.ts`, and an **optional** `getUsage?()` on `LLMAdapter` — optional by design
+  so a provider that can't report usage omits it rather than fabricating zeros.
+- `WatsonxProvider` accumulates per call. Usage is recorded **before** the truncation/shape
+  error checks: a call that burned tokens and then failed still cost money, and skipping it
+  would understate the total. `getUsage()` returns `undefined` until a call has reported, and
+  hands back a copy so a caller can't mutate the running total.
+- `InitResult`/`UpdateResult` gain `tokenUsage?` and `sourceBytes` (summed from
+  `ScannedFile.sizeBytes`, already collected); `ReviewResult`/`ExplainResult` gain `tokenUsage?`.
+- `printTokenUsage()` in `bin/debob.ts` renders both halves, labelled differently on purpose.
+
+**Measured on this repo** (44 modules, `openai/gpt-oss-120b`):
+
+```
+Prompt        : 22,416   graph slices actually sent          (exact, from IBM)
+Completion    : 11,597   includes hidden reasoning tokens    (exact, from IBM)
+Total         : 34,013   across 88 calls                     (44 files × 2 — as predicted)
+Raw source    : ~159,028 est. from 0.61 MB at ~4 chars/token (ESTIMATE)
+Reduction     : ~7.1×
+```
+
+Cross-checked the byte figure with an independent filesystem walk: 0.63 MB vs DeBob's 0.61 MB,
+the 3% gap explained by `.gitignore`/`.debobignore` filtering. The ratio holds.
+
+**Honesty rules baked into the renderer — do not relax these:**
+- Prompt/completion/total are **exact provider counts** and are rendered plainly.
+- The raw-source figure is an **estimate**: always `~`-prefixed, always carrying its assumption
+  ("est. from N MB at ~4 chars/token"). Never present it as measured.
+- Completion tokens are labelled as including hidden reasoning. A trivial
+  `"Reply with exactly: ok"` measured **51 completion tokens** on `gpt-oss-120b` — these counts
+  do not measure answer length.
+- No usage reported ⇒ **print nothing**. "Not measured" must never render as `0`, which would
+  be a false claim rather than an absent one. Covered by a test.
+- `review` prints no reduction ratio: it deliberately sends the raw diff, so "vs. sending the
+  source" would compare unlike things.
+
+---
+
+## Faster Enrichment + Agent Enrichment (Sub-Task L) — ✅ done, speedup measured
+
+Two changes, both aimed at "enrichment is the slowest part of a run".
+
+**1. Enrichment now runs concurrently.** It was strictly sequential — `for (const node of
+graph.nodes.values())` with `await` inside; only the *two calls per file* were parallel. On a
+40-file repo that's 40 serial round-trips, and the wall-clock cost is almost entirely network
+idle. `src/engine/concurrency.ts` adds `mapWithConcurrency`, used by both `runInit` and
+`runUpdate`, with `--concurrency <n>` on the CLI (default 6, clamped to 24 so a typo can't
+cause a rate-limit storm).
+
+**Measured** on this repo (44 file nodes, 88 watsonx calls, `openai/gpt-oss-120b`), full
+`debob init --semantic` wall-clock, both runs exit 0:
+
+| Run | Wall clock |
+|---|---|
+| `--concurrency 1` (the old sequential behaviour) | **141s** |
+| `--concurrency 8` | **21s** |
+
+**~6.7× end-to-end.** Structural-only `init` is ~3–4s warm (16s on a cold WASM start), so
+enrichment is essentially all of that time; the phase itself is roughly 137s → 17s. Don't
+subtract a fixed structural baseline to quote a bigger ratio — it varies by an order of
+magnitude between cold and warm runs, which is exactly the mistake the first measurement made.
+
+⚠️ **`--concurrency N` means 2N simultaneous HTTP requests**, because each file fires
+`summarizeModule` and `classifyLayer` in parallel via `Promise.all`. So the default of 6 is 12
+in flight, and 8 is 16. watsonx tolerated 16 fine here; lower the flag if a provider starts
+rate-limiting.
+
+`concurrency.test.ts` covers the mechanism itself (limit respected, input order preserved,
+8×30ms completes in <150ms rather than ~240ms, every item visited exactly once).
+
+**2. `debob enrich` — semantic enrichment with no API key.** The agent already running in the
+repo does the work instead of a hosted model:
+
+```bash
+debob enrich --export .debob/enrichment.json    # module contexts, skips already-enriched
+# agent fills in { nodeId, responsibility, layer } per task
+debob enrich --import .debob/enrichment-answers.json
+```
+
+`src/engine/enrich.ts` — `runEnrichExport` / `runEnrichImport`. Output lands in the same
+`semantic_enrichments` table as `--semantic`, tagged `llmProvider: "agent"`,
+`modelId: "claude-code"` (override with `--model`), and runs the same post-processing:
+layers propagate onto file nodes, then `inheritLayersFromFiles` gives symbols their layer.
+Downstream (`explain`, the visualiser) can't tell the difference apart from the provenance tag.
+
+Validation is deliberate, since the input is agent-written:
+- Unknown `nodeId` → skipped and reported (guards against a stale export or an invented id).
+- `layer` not in `ARCHITECTURAL_LAYERS` → that field skipped, but the node's **responsibility
+  still lands**. Partial acceptance beats losing good text over one bad enum.
+- The parser accepts a bare array, `{ answers: [...] }`, or `{ tasks: [...] }` — being liberal
+  costs nothing and saves a "wrong wrapper key" round-trip.
+
+Verified by round-trip on this repo: 40 tasks exported; an answers file containing a bad
+`nodeId` and an invalid layer produced exactly the expected `Skipped` entries while the valid
+rows were written.
+
+**3. `manifest.semantic` now reports reality, not the flag.** It recorded "was `--semantic`
+passed on this run", which was fine while that was the only way to get enrichments. With
+`debob enrich` it isn't: a fully enriched graph would still write `semantic: false`, and the
+AGENTS.md block words itself from that field — so it told every agent "no semantic enrichment
+yet" on a graph with 44 responsibilities in it. Both `runInit` and `runUpdate` now derive it
+from `hasResponsibilityEnrichments(adapter)`, and `runEnrichImport` refreshes the manifest plus
+the AGENTS.md block after a successful import (best-effort; a failure there must not lose the
+enrichments just written).
+
+**Discovery.** Two mechanisms, because they cover different tools:
+- `.bob/skills/debob-enrich/SKILL.md` — for Bob/agents that read `.bob/skills/`.
+- **The `AGENTS.md` auto-block** (`src/engine/agentInstructions.ts`) now carries an "Enriching
+  the graph (you can do this yourself — no API key)" section. This is the one that matters for
+  arbitrary repos: `.bob/skills/` is only present in this repo, whereas `debob init` writes
+  `AGENTS.md` into *any* target repo, and Claude Code / Cursor auto-load it.
+
+---
+
 ## Graph Truth + watsonx Surfacing (Sub-Task K) — ✅ done
 
 Measuring the graph after the visualiser fix showed the real problem was *what was in it*, not
@@ -263,6 +385,8 @@ Worth doing before relying on this at that scale.
 | I | `AGENTS.md` auto-instructions (any-agent discovery mechanism) | ✅ done |
 | J | Python analyzer, opt-in post-commit hook, team-sharing docs | ✅ done |
 | K | Graph truth (`declares`/`calls`/`instantiates`, arrow fns, methods, resolved heritage, layer inheritance, authoritative `init`) + watsonx responsibility in the visualiser + vitest | ✅ done |
+| L | Concurrent enrichment (`--concurrency`) + `debob enrich` export/import for API-key-free agent enrichment + AGENTS.md/skill discovery | ✅ done (141s → 21s measured) |
+| M | Token accounting: exact provider usage + not-sent counterfactual, printed by every command | ✅ done (~7.1× measured) |
 
 ---
 
@@ -397,6 +521,15 @@ src/
                                         graph nodes (both a/ and b/ paths, rename-aware) →
                                         2-hop neighbourhood → semantic_enrichments → llm.explainDiff()
                                       try/finally around adapter.close()
+   concurrency.ts                  ← mapWithConcurrency(items, limit, worker)
+                                      DEFAULT_ENRICH_CONCURRENCY = 6
+                                      enrichment was serial; this overlaps the round-trips
+   enrich.ts                       ← runEnrichExport / runEnrichImport
+                                      API-key-free enrichment: export ModuleContexts as JSON,
+                                        an agent writes { nodeId, responsibility, layer },
+                                        import validates + writes to semantic_enrichments
+                                      rejects unknown nodeIds and non-ArchitecturalLayer values,
+                                        but still keeps a valid responsibility beside a bad layer
    explain.ts                      ← runExplain(repoRoot, options): Promise<ExplainResult>
                                       ExplainOptions, ExplainResult types
                                       findRelevantNodes() → join cached responsibility text →
@@ -601,3 +734,9 @@ node dist/debob.js     # run compiled output
   is an upsert, so anything a previous run created and this one didn't survives indefinitely
 - Do NOT put a backtick in a comment inside `src/visualiser/server.ts` — the whole page is one
   TypeScript template literal and a stray backtick terminates it (hit twice now)
+- Do NOT query the adapter after `adapter.close()`. sql.js frees its heap on close, and any
+  query afterwards fails with a bare **"out of memory"** that looks nothing like a use-after-free.
+  Read whatever the manifest step needs *before* the close — see `graphHasEnrichments` in
+  `runInit`/`runUpdate`
+- Do NOT read `--concurrency N` as N requests in flight — each file fires two calls in parallel,
+  so it is **2N**

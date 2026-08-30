@@ -2,7 +2,7 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import { openDb, SqlitePersistenceAdapter } from '../persistence/sqlite.js'
 import { findRelevantNodes, getNodeEdges } from '../query/index.js'
-import type { LLMAdapter, QueryContext } from '../llm/adapter.js'
+import type { LLMAdapter, QueryContext, TokenUsage } from '../llm/adapter.js'
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -24,6 +24,8 @@ export interface ExplainResult {
   relevantFiles: string[]
   /** LLM answer grounded in graph data. */
   answer: string
+  /** Provider-reported token spend for this run. Undefined = provider reports no usage. */
+  tokenUsage?: TokenUsage
 }
 
 // ─── runExplain ───────────────────────────────────────────────────────────────
@@ -88,6 +90,7 @@ export async function runExplain(repoRoot: string, options: ExplainOptions): Pro
       question,
       relevantFiles: [...new Set(relevantNodes.map(n => n.filePath))],
       answer,
+      tokenUsage: llm.getUsage?.(),
     }
   } finally {
     adapter.close()

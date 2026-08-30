@@ -4,7 +4,9 @@
 
 DeBob is a persistent repository-understanding and context system for AI coding agents.
 
-It scans any Git repository and builds `.debob/context.db` — a SQLite knowledge graph of files, symbols, imports, Git history, and optional LLM-inferred architectural context. AI agents query the graph instead of reading raw source files, cutting token cost by an order of magnitude.
+It scans any Git repository and builds `.debob/context.db` — a SQLite knowledge graph of files, symbols, imports, Git history, and optional LLM-inferred architectural context. AI agents query the graph instead of reading raw source files.
+
+**The LLM never receives the repository**, and DeBob measures that rather than asserting it. Enriching DeBob's own 44 modules sent **22,416 prompt tokens** (exact, reported by watsonx) against an estimated **~159,000** for the 0.61 MB of source it describes — a **~7.1× reduction**. Every run prints its own figure.
 
 ---
 
@@ -40,6 +42,10 @@ node dist/bin/debob.js init --semantic
 ```
 
 This adds `responsibility` and architectural `layer` enrichments for every file node — stored in the `semantic_enrichments` table, never in the raw source.
+
+Enrichment calls run concurrently (default 6 in flight, tune with `--concurrency <n>`).
+
+**No watsonx credentials?** Your coding agent can do the same job — see [`enrich`](#enrich--semantic-enrichment-without-an-api-key) below.
 
 ### Step 3 — Explore the graph
 
@@ -196,6 +202,28 @@ node dist/bin/debob.js review --base main
 ```
 
 ---
+
+### `enrich` — Semantic enrichment without an API key
+
+```bash
+node dist/bin/debob.js enrich --export .debob/enrichment.json
+# your coding agent fills in the answers
+node dist/bin/debob.js enrich --import .debob/enrichment-answers.json
+```
+
+Same result as `--semantic`, produced by the coding agent already running in your repo instead of a hosted model. `--export` writes each module's graph context (imports, exports, declarations, churn); the agent writes back `{ nodeId, responsibility, layer }` per module; `--import` validates and stores them in `semantic_enrichments`, propagates layers onto file nodes, and lets symbols inherit from their file.
+
+| Option | Description |
+|---|---|
+| `--export <file>` | Write module contexts for an agent to fill in |
+| `--import <file>` | Read agent-written answers into the graph |
+| `--all` | Export every module, not just those with no responsibility yet |
+| `--model <name>` | Recorded as the enrichment `modelId` (default `claude-code`) |
+| `--repo <path>` | Repository root (default: cwd) |
+
+`--export` skips already-enriched modules by default, so it's safe to re-run — it hands back only the outstanding work. Unknown `nodeId`s and invalid layers are reported under `Skipped` rather than silently dropped; a bad layer doesn't discard that module's responsibility.
+
+Agents discover this automatically: `debob init` writes the workflow into your repo's `AGENTS.md`, and Bob-style agents can also read [`.bob/skills/debob-enrich/SKILL.md`](.bob/skills/debob-enrich/SKILL.md).
 
 ### `explain` — Ask a free-form question
 

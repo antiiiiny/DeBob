@@ -4,7 +4,7 @@ import simpleGit from 'simple-git'
 import { openDb, SqlitePersistenceAdapter } from '../persistence/sqlite.js'
 import { getNodeNeighbours } from '../query/index.js'
 import type { Graph, Node } from '../graph/types.js'
-import type { LLMAdapter, DiffContext } from '../llm/adapter.js'
+import type { LLMAdapter, DiffContext, TokenUsage } from '../llm/adapter.js'
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -33,6 +33,8 @@ export interface ReviewResult {
   explanation: string
   /** Non-fatal notes about the review (e.g. changed files not yet in the graph). */
   notes: string[]
+  /** Provider-reported token spend for this run. Undefined = provider reports no usage. */
+  tokenUsage?: TokenUsage
 }
 
 // ─── Diff helpers ─────────────────────────────────────────────────────────────
@@ -195,6 +197,7 @@ export async function runReview(repoRoot: string, options: ReviewOptions): Promi
       neighbourhoodSize: neighbourNodes.length,
       explanation,
       notes,
+      tokenUsage: llm.getUsage?.(),
     }
   } finally {
     adapter.close()

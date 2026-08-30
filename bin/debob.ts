@@ -33,8 +33,9 @@ import open from 'open'
 import { runInit, runUpdate } from '../src/engine/index.js'
 import { runReview } from '../src/engine/review.js'
 import { runExplain } from '../src/engine/explain.js'
+import { runEnrichExport, runEnrichImport } from '../src/engine/enrich.js'
 import { createLLMAdapter } from '../src/llm/index.js'
-import type { LLMAdapter } from '../src/llm/adapter.js'
+import type { LLMAdapter, TokenUsage } from '../src/llm/adapter.js'
 import { startVisualiserServer } from '../src/visualiser/server.js'
 
 // ─── Package metadata ─────────────────────────────────────────────────────────
@@ -52,6 +53,48 @@ const pkg = _require(existsSync(sourcePackagePath) ? sourcePackagePath : builtPa
 // Shared by every command that can call watsonx. 'warn' mode (init/update --semantic) treats
 // missing/broken credentials as non-fatal — the command continues without LLM enrichment.
 // 'error' mode (review/explain) treats the LLM as mandatory and exits the process.
+
+/** Rough chars-per-token ratio used only for the not-sent counterfactual. */
+const CHARS_PER_TOKEN = 4
+
+/**
+ * Render provider-reported token spend beside the counterfactual: what sending the raw
+ * source would have cost. This is the evidence for DeBob's central claim, so the two halves
+ * are labelled differently on purpose — the sent side is exact, the not-sent side is an
+ * estimate and is always marked `~` with its assumption stated.
+ *
+ * Prints nothing when the provider reported no usage; "not measured" must never render as 0.
+ */
+function printTokenUsage(usage: TokenUsage | undefined, sourceBytes: number): void {
+  if (!usage) return
+
+  const n = (value: number): string => value.toLocaleString('en-US')
+  console.log(chalk.bold('  Token usage:'))
+  console.log(`    Prompt        : ${chalk.bold(n(usage.promptTokens))}  ${chalk.gray('graph slices actually sent')}`)
+  console.log(`    Completion    : ${chalk.bold(n(usage.completionTokens))}  ${chalk.gray('includes hidden reasoning tokens')}`)
+  const callLabel = usage.callCount === 1 ? '1 call' : `${n(usage.callCount)} calls`
+  console.log(`    Total         : ${chalk.bold(n(usage.totalTokens))}  ${chalk.gray(`across ${callLabel}`)}`)
+
+  if (sourceBytes > 0 && usage.promptTokens > 0) {
+    const estimated = Math.round(sourceBytes / CHARS_PER_TOKEN)
+    const megabytes = (sourceBytes / (1024 * 1024)).toFixed(2)
+    const ratio = estimated / usage.promptTokens
+    console.log(
+      `    Raw source    : ${chalk.dim('~' + n(estimated))}  ${chalk.gray(`est. from ${megabytes} MB scanned at ~${CHARS_PER_TOKEN} chars/token`)}`,
+    )
+    console.log(
+      `    ${chalk.green('Reduction')}     : ${chalk.green.bold('~' + ratio.toFixed(1) + '×')}  ${chalk.gray('vs. sending the source itself')}`,
+    )
+  }
+  console.log()
+}
+
+/** Clamped so a stray `--concurrency 500` can't turn a run into a rate-limit storm. */
+function parseEnrichConcurrency(raw: string): number {
+  const parsed = parseInt(raw, 10)
+  if (!Number.isInteger(parsed) || parsed < 1) return 6
+  return Math.min(parsed, 24)
+}
 
 function resolveLLMAdapter(mode: 'warn'): LLMAdapter | undefined
 function resolveLLMAdapter(mode: 'error'): LLMAdapter
@@ -103,8 +146,9 @@ program
   .option('--repo <path>', 'Path to the repository root', process.cwd())
   .option('--max-commits <n>', 'Maximum number of Git commits to analyze', '500')
   .option('--semantic', 'Run LLM semantic enrichment after structural extraction')
+  .option('--concurrency <n>', 'Enrichment calls to keep in flight', '6')
   .option('--verbose', 'Show detailed progress output')
-  .action(async (opts: { repo: string; maxCommits: string; semantic?: boolean; verbose?: boolean }) => {
+  .action(async (opts: { repo: string; maxCommits: string; semantic?: boolean; concurrency: string; verbose?: boolean }) => {
     try {
       const repoRoot = opts.repo
       const maxCommits = parseInt(opts.maxCommits, 10)
@@ -126,6 +170,7 @@ program
           semantic: semantic && llm !== undefined,
           llm,
           verbose,
+          enrichConcurrency: parseEnrichConcurrency(opts.concurrency),
         })
         spinner.succeed(chalk.green('Repository analysis complete'))
       } catch (err) {
@@ -178,6 +223,8 @@ program
         console.log()
       }
 
+      printTokenUsage(result.tokenUsage, result.sourceBytes)
+
       // DB path
       console.log(chalk.cyan('  Database      :'), chalk.underline(result.dbPath))
       console.log()
@@ -188,6 +235,91 @@ program
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error(chalk.red(`\n✖  ${msg}`))
+      process.exit(1)
+    }
+  })
+
+// ─── enrich command ────────────────────────────────────────────────────────
+
+program
+  .command('enrich')
+  .description('Semantic enrichment without an API key: export module context for a coding agent to describe, then import its answers')
+  .option('--repo <path>', 'Path to the repository root', process.cwd())
+  .option('--export <file>', 'Write module contexts to <file> for an agent to fill in')
+  .option('--import <file>', 'Read agent-written answers from <file> into the graph')
+  .option('--all', 'Export every module, not just those with no responsibility yet')
+  .option('--model <name>', 'Recorded as the enrichment modelId', 'claude-code')
+  .action(async (opts: { repo: string; export?: string; import?: string; all?: boolean; model: string }) => {
+    if (!opts.export && !opts.import) {
+      console.error(chalk.red('\n✖  Specify --export <file> or --import <file>.'))
+      console.log(chalk.dim('   debob enrich --export .debob/enrichment.json'))
+      console.log(chalk.dim('   …fill it in with your coding agent, then:'))
+      console.log(chalk.dim('   debob enrich --import .debob/enrichment.json'))
+      process.exit(1)
+    }
+    if (opts.export && opts.import) {
+      console.error(chalk.red('\n✖  Use --export or --import, not both at once.'))
+      process.exit(1)
+    }
+
+    if (opts.export) {
+      const spinner = ora('Building module contexts...').start()
+      try {
+        const result = await runEnrichExport(opts.repo, {
+          outFile: opts.export,
+          onlyMissing: !opts.all,
+        })
+        spinner.succeed(chalk.green('Enrichment tasks exported'))
+        console.log()
+        console.log('  Tasks written  : ' + chalk.bold(String(result.taskCount)))
+        if (result.skippedAlreadyEnriched > 0) {
+          console.log('  Already done   : ' + chalk.dim(String(result.skippedAlreadyEnriched) + ' (use --all to redo)'))
+        }
+        console.log('  File           : ' + chalk.cyan(result.outFile))
+        if (result.taskCount === 0) {
+          console.log()
+          console.log(chalk.dim('  Everything is already enriched. Nothing to do.'))
+          return
+        }
+        console.log()
+        console.log(chalk.bold('  Next:'))
+        console.log(chalk.dim('   1. Ask your coding agent: "enrich the debob graph" (it will find .bob/skills/debob-enrich)'))
+        console.log(chalk.dim('      or hand it ' + result.outFile + ' and follow the "instructions" field inside.'))
+        console.log(chalk.dim('   2. debob enrich --import ' + result.outFile))
+      } catch (err) {
+        spinner.fail(chalk.red('Export failed'))
+        console.error(chalk.red('\n✖  ' + (err instanceof Error ? err.message : String(err))))
+        process.exit(1)
+      }
+      return
+    }
+
+    const spinner = ora('Importing enrichment answers...').start()
+    try {
+      const result = await runEnrichImport(opts.repo, {
+        inFile: opts.import!,
+        model: opts.model,
+      })
+      spinner.succeed(chalk.green('Enrichment imported'))
+      console.log()
+      console.log('  Responsibilities : ' + chalk.bold(String(result.responsibilitiesWritten)))
+      console.log('  Layers           : ' + chalk.bold(String(result.layersWritten)))
+      console.log('  Symbols inherited: ' + chalk.bold(String(result.symbolsInheritedLayer)))
+      if (result.skipped.length > 0) {
+        console.log()
+        console.log(chalk.yellow('  Skipped (' + result.skipped.length + '):'))
+        for (const item of result.skipped.slice(0, 10)) {
+          console.log(chalk.yellow('    ' + item.nodeId + ' — ' + item.reason))
+        }
+        if (result.skipped.length > 10) {
+          console.log(chalk.dim('    … +' + (result.skipped.length - 10) + ' more'))
+        }
+      }
+      console.log()
+      console.log(chalk.dim('  Run `debob visualise` to see the summaries in the Node Inspector.'))
+    } catch (err) {
+      spinner.fail(chalk.red('Import failed'))
+      console.error(chalk.red('\n✖  ' + (err instanceof Error ? err.message : String(err))))
       process.exit(1)
     }
   })
@@ -245,8 +377,9 @@ program
   .description('Incrementally re-analyze changed files and update the knowledge graph')
   .option('--repo <path>', 'Path to the repository root', process.cwd())
   .option('--semantic', 'Run LLM semantic enrichment on re-analyzed files')
+  .option('--concurrency <n>', 'Enrichment calls to keep in flight', '6')
   .option('--verbose', 'Show detailed progress output')
-  .action(async (opts: { repo: string; semantic?: boolean; verbose?: boolean }) => {
+  .action(async (opts: { repo: string; semantic?: boolean; concurrency: string; verbose?: boolean }) => {
     try {
       const repoRoot = opts.repo
       const semantic = opts.semantic ?? false
@@ -266,6 +399,7 @@ program
           semantic: semantic && llm !== undefined,
           llm,
           verbose,
+          enrichConcurrency: parseEnrichConcurrency(opts.concurrency),
         })
         spinner.succeed(chalk.green('Incremental update complete'))
       } catch (err) {
@@ -296,6 +430,8 @@ program
         }
       }
       console.log()
+      printTokenUsage(result.tokenUsage, result.sourceBytes)
+
       console.log(chalk.cyan('  Database :'), chalk.underline(result.dbPath))
       console.log()
       console.log(chalk.bold('─────────────────────────────────────────────────────────'))
@@ -369,6 +505,9 @@ program
         console.log('  ' + line)
       }
       console.log()
+      // No counterfactual here — review deliberately sends the raw diff, so a
+      // "vs. sending the source" ratio would be comparing unlike things.
+      printTokenUsage(result.tokenUsage, 0)
       console.log(chalk.bold('─────────────────────────────────────────────────────────'))
       console.log()
 
@@ -428,6 +567,7 @@ program
         console.log('  ' + line)
       }
       console.log()
+      printTokenUsage(result.tokenUsage, 0)
       console.log(chalk.bold('─────────────────────────────────────────────────────────'))
       console.log()
 

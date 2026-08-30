@@ -1,6 +1,6 @@
 import { WatsonXAI } from '@ibm-cloud/watsonx-ai'
 import { IamAuthenticator } from '@ibm-cloud/watsonx-ai/authentication'
-import type { LLMAdapter, LLMConfig, ModuleContext, DiffContext, QueryContext } from '../adapter.js'
+import type { LLMAdapter, LLMConfig, ModuleContext, DiffContext, QueryContext, TokenUsage } from '../adapter.js'
 
 /**
  * Max time to wait for a single watsonx chat call before failing with a clear error.
@@ -63,6 +63,14 @@ export class WatsonxProvider implements LLMAdapter {
   private readonly client: WatsonXAI
   private readonly projectId: string
   readonly modelId: string
+
+  /** Cumulative token spend, accumulated per call in `_chat`. See `getUsage`. */
+  private usage: TokenUsage = {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    callCount: 0,
+  }
 
   constructor(config: LLMConfig) {
     if (!config.apiKey) throw new Error('WatsonxProvider: apiKey is required (WATSONX_API_KEY)')
@@ -251,6 +259,15 @@ export class WatsonxProvider implements LLMAdapter {
    * Response shape follows the OpenAI-compatible chat schema:
    *   response.result.choices[0].message.content
    */
+  /**
+   * Cumulative token usage across every call made by this instance.
+   * Returns undefined when no call has reported usage, so callers can distinguish
+   * "nothing measured" from a genuine zero.
+   */
+  getUsage(): TokenUsage | undefined {
+    return this.usage.callCount === 0 ? undefined : { ...this.usage }
+  }
+
   private async _chat(
     messages: Array<{ role: 'system' | 'user'; content: string }>,
   ): Promise<string> {
@@ -270,6 +287,16 @@ export class WatsonxProvider implements LLMAdapter {
       }),
       timeout,
     ])
+
+    // Record usage BEFORE the checks below: a call that burned tokens and then came back
+    // truncated or malformed still cost money, and skipping it would understate the total.
+    const usage = response.result?.usage
+    if (usage) {
+      this.usage.promptTokens += usage.prompt_tokens ?? 0
+      this.usage.completionTokens += usage.completion_tokens ?? 0
+      this.usage.totalTokens += usage.total_tokens ?? 0
+      this.usage.callCount += 1
+    }
 
     const content = response.result?.choices?.[0]?.message?.content
     if (typeof content !== 'string' || content.length === 0) {

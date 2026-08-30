@@ -11,9 +11,10 @@ import type { ArchitecturalLayer, Edge, Graph, Node } from '../graph/types.js'
 import { openDb, readManifest, SqlitePersistenceAdapter, writeManifest } from '../persistence/sqlite.js'
 import type { Manifest } from '../persistence/sqlite.js'
 import { writeAgentInstructions } from './agentInstructions.js'
+import { DEFAULT_ENRICH_CONCURRENCY, mapWithConcurrency } from './concurrency.js'
 import { SCHEMA_VERSION } from '../persistence/schema.js'
 import type { FileCacheEntry, GitFileStats, SemanticEnrichment } from '../persistence/interface.js'
-import type { LLMAdapter } from '../llm/adapter.js'
+import type { LLMAdapter, TokenUsage } from '../llm/adapter.js'
 import { buildModuleContext } from '../query/index.js'
 import type { ScannedFile } from '../scanner/types.js'
 
@@ -32,6 +33,12 @@ export interface InitOptions {
   semantic?: boolean
   /** LLM adapter instance. Required when semantic is true. */
   llm?: LLMAdapter
+  /**
+   * How many enrichment calls to keep in flight. Enrichment used to be strictly
+   * sequential, which made it by far the slowest part of a run. Defaults to
+   * DEFAULT_ENRICH_CONCURRENCY; lower it if a provider starts rate-limiting.
+   */
+  enrichConcurrency?: number
 }
 
 /**
@@ -58,6 +65,16 @@ export interface InitResult {
   packageDependencies: string[]
   /** Absolute path to .debob/context.db. */
   dbPath: string
+  /**
+   * Provider-reported token spend, when semantic enrichment ran and the provider reports
+   * usage. Undefined means "not measured" — never render it as zero.
+   */
+  tokenUsage?: TokenUsage
+  /**
+   * Total bytes of source scanned. The counterfactual for `tokenUsage.promptTokens`:
+   * what a naive "just send the files" approach would have had to transmit.
+   */
+  sourceBytes: number
 }
 
 /** Options accepted by runUpdate. */
@@ -76,6 +93,10 @@ export interface UpdateResult {
   reanalyzedFiles: string[]
   skippedFiles: string[]
   dbPath: string
+  /** Provider-reported token spend, when enrichment ran. Undefined = not measured. */
+  tokenUsage?: TokenUsage
+  /** Total bytes of source scanned — counterfactual for `tokenUsage.promptTokens`. */
+  sourceBytes: number
 }
 
 // ─── Analyzer Registry ────────────────────────────────────────────────────────
@@ -120,6 +141,17 @@ function makeFileNode(file: ScannedFile): Node {
     dataSource: 'static',
     metadata: { contentHash: file.contentHash },
   }
+}
+
+/**
+ * Does the persisted graph carry any usable LLM/agent-written module summary? This, not
+ * "was --semantic passed", is what `manifest.semantic` should report — it's what drives the
+ * wording of the AGENTS.md block every agent reads.
+ */
+function hasResponsibilityEnrichments(adapter: SqlitePersistenceAdapter): boolean {
+  return adapter
+    .readSemanticEnrichments()
+    .some(entry => entry.field === 'responsibility' && entry.value.trim() !== '')
 }
 
 function makeStubNode(id: string): Node {
@@ -276,7 +308,13 @@ export async function runInit(
   repoRoot: string,
   options: InitOptions = {},
 ): Promise<InitResult> {
-  const { maxCommits = 500, verbose = false, semantic = false, llm } = options
+  const {
+    maxCommits = 500,
+    verbose = false,
+    semantic = false,
+    llm,
+    enrichConcurrency: concurrency = DEFAULT_ENRICH_CONCURRENCY,
+  } = options
   const log = makeLogger(verbose)
 
   // ─── Step 1: Validate repo root ───────────────────────────────────────────
@@ -388,22 +426,29 @@ export async function runInit(
     const provider = (llm as unknown as { provider?: string }).provider ?? 'unknown'
     const modelId = (llm as unknown as { modelId?: string }).modelId ?? 'unknown'
 
-    for (const node of graph.nodes.values()) {
-      if (node.type !== 'file') continue
+    const fileNodes = Array.from(graph.nodes.values()).filter(node => node.type === 'file')
+    log('semantic', `${fileNodes.length} file nodes, ${concurrency} calls in flight`)
+
+    // Bounded-concurrency rather than one-at-a-time: the wall-clock cost here is almost
+    // entirely network idle, so overlapping the round-trips is the single biggest speedup
+    // available and needs no provider change.
+    const perNode = await mapWithConcurrency(fileNodes, concurrency, async (node) => {
       try {
         const context = buildModuleContext(node, graph)
         const [responsibility, layer] = await Promise.all([
           llm.summarizeModule(context),
           llm.classifyLayer(context),
         ])
-        enrichments.push(
+        return [
           { nodeId: node.id, field: 'responsibility', value: responsibility, llmProvider: provider, modelId, createdAt: now },
           { nodeId: node.id, field: 'layer', value: layer, llmProvider: provider, modelId, createdAt: now },
-        )
+        ] satisfies SemanticEnrichment[]
       } catch {
         // Skip nodes that fail enrichment — do not abort the whole run
+        return [] as SemanticEnrichment[]
       }
-    }
+    })
+    enrichments.push(...perNode.flat())
 
     adapter.saveSemanticEnrichments(enrichments)
 
@@ -434,6 +479,10 @@ export async function runInit(
 
   // ─── Step 8: Save to disk (REQUIRED for sql.js) ───────────────────────────
 
+  // Read this while the database is still open: close() frees the sql.js heap, and any
+  // query after it throws a bare "out of memory".
+  const graphHasEnrichments = hasResponsibilityEnrichments(adapter)
+
   adapter.close()
   log('persist', `database saved to ${dbPath}`)
 
@@ -455,7 +504,11 @@ export async function runInit(
     fileCount,
     commitCount,
     headCommit: gitMetadata.headCommit,
-    semantic,
+    // Reflects whether the graph actually *has* enrichments, not whether --semantic was
+    // passed on this particular run. Since `debob enrich` can populate them without any
+    // credentials, the flag would otherwise claim "no enrichment yet" on a fully enriched
+    // graph — and that claim is what AGENTS.md tells every agent.
+    semantic: graphHasEnrichments,
   }
   writeManifest(repoRoot, manifestData)
   log('manifest', 'written')
@@ -490,6 +543,8 @@ export async function runInit(
     layerDistribution,
     packageDependencies,
     dbPath,
+    tokenUsage: llm?.getUsage?.(),
+    sourceBytes: files.reduce((total, file) => total + file.sizeBytes, 0),
   }
 }
 
@@ -515,7 +570,13 @@ export async function runUpdate(
   repoRoot: string,
   options: UpdateOptions = {},
 ): Promise<UpdateResult> {
-  const { maxCommits = 500, verbose = false, semantic = false, llm } = options
+  const {
+    maxCommits = 500,
+    verbose = false,
+    semantic = false,
+    llm,
+    enrichConcurrency: concurrency = DEFAULT_ENRICH_CONCURRENCY,
+  } = options
   const log = makeLogger(verbose)
 
   // ─── Step 1: Open existing DB ─────────────────────────────────────────────
@@ -541,6 +602,8 @@ export async function runUpdate(
       reanalyzedFiles: [],
       skippedFiles: [],
       dbPath: initResult.dbPath,
+      tokenUsage: initResult.tokenUsage,
+      sourceBytes: initResult.sourceBytes,
     }
   }
 
@@ -718,22 +781,28 @@ export async function runUpdate(
     const modelId = (llm as unknown as { modelId?: string }).modelId ?? 'unknown'
 
     const reanalyzedIds = new Set(reanalyzedFiles.map(f => f.relativePath))
-    for (const node of graph.nodes.values()) {
-      if (node.type !== 'file' || !reanalyzedIds.has(node.id)) continue
+    const staleNodes = Array.from(graph.nodes.values()).filter(
+      node => node.type === 'file' && reanalyzedIds.has(node.id),
+    )
+    log('semantic', `${staleNodes.length} re-analyzed file nodes, ${concurrency} calls in flight`)
+
+    const perNode = await mapWithConcurrency(staleNodes, concurrency, async (node) => {
       try {
         const context = buildModuleContext(node, graph)
         const [responsibility, layer] = await Promise.all([
           llm.summarizeModule(context),
           llm.classifyLayer(context),
         ])
-        enrichments.push(
+        return [
           { nodeId: node.id, field: 'responsibility', value: responsibility, llmProvider: provider, modelId, createdAt: now },
           { nodeId: node.id, field: 'layer', value: layer, llmProvider: provider, modelId, createdAt: now },
-        )
+        ] satisfies SemanticEnrichment[]
       } catch {
-        // Skip nodes that fail enrichment
+        return [] as SemanticEnrichment[]
       }
-    }
+    })
+    enrichments.push(...perNode.flat())
+
     adapter.saveSemanticEnrichments(enrichments)
 
     // Propagate layer enrichments back to Node.layer
@@ -763,6 +832,9 @@ export async function runUpdate(
 
   // ─── Step 11: Close DB; write manifest ────────────────────────────────────
 
+  // Must be read before close() frees the sql.js heap — see runInit.
+  const graphHasEnrichments = hasResponsibilityEnrichments(adapter)
+
   adapter.close()
   log('persist', `database saved to ${resolvedDbPath}`)
 
@@ -778,7 +850,7 @@ export async function runUpdate(
     fileCount: files.length,
     commitCount: (manifest.commitCount ?? 0) + newGitMetadata.commits.length,
     headCommit: newGitMetadata.headCommit || manifest.headCommit || '',
-    semantic: manifest.semantic || (semantic && llm !== undefined),
+    semantic: graphHasEnrichments,
   }
   writeManifest(repoRoot, manifestData)
   log('manifest', 'written')
@@ -804,5 +876,7 @@ export async function runUpdate(
     reanalyzedFiles: reanalyzedFiles.map(f => f.relativePath),
     skippedFiles: unchangedFiles.map(f => f.relativePath),
     dbPath: resolvedDbPath,
+    tokenUsage: llm?.getUsage?.(),
+    sourceBytes: files.reduce((total, file) => total + file.sizeBytes, 0),
   }
 }
