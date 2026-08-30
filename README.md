@@ -27,6 +27,13 @@ That opens the interactive graph on `http://localhost:7842` — 299 nodes and 60
 files, with watsonx-written responsibility summaries attached. Click any node with a cyan halo to
 read its summary and see the model that produced it.
 
+![The DeBob visualiser: the knowledge graph for this repository, grouped by architectural layer,
+with a watsonx-written responsibility summary open in the node inspector](docs/images/debob-visualize-image.png)
+
+Nodes are coloured by type and sized by connectedness; regions are architectural layers. The node
+inspector on the right shows what watsonx.ai wrote about the selected module, attributed to the
+model that produced it.
+
 Everything below is for pointing DeBob at a repository of your own.
 
 ---
@@ -315,7 +322,56 @@ Credentials are **never** written to `.debob/` or any config file. If any variab
 | `file_cache` | Content hashes and analyzer versions — drives incremental updates |
 | `semantic_enrichments` | LLM-inferred `responsibility` and `layer` per file node, with provider + model provenance |
 
-See [`docs/architecture.md`](docs/architecture.md) for the full schema and design rationale.
+### How it fits together
+
+```mermaid
+flowchart TD
+    repo["Any Git repository"]
+
+    subgraph det ["Deterministic — confidence 1.0, never guessed"]
+        scan["Scanner<br/>ignore rules · size cap · extension allowlist"]
+        ts["tree-sitter analyzers<br/>TypeScript · JavaScript · Python"]
+        git["Git extractor<br/>simple-git"]
+        build["Graph builder<br/>merge + deduplicate + layer inheritance"]
+    end
+
+    db[("(.debob/context.db)<br/>nodes · edges · git_file_stats · file_cache")]
+
+    subgraph sem ["Optional semantic layer — confidence < 1.0, quarantined"]
+        q["Query layer<br/>buildModuleContext"]
+        wx{{"IBM watsonx.ai<br/>describeModule · answerQuestion · explainDiff"}}
+        se[("semantic_enrichments<br/>responsibility · layer · model")]
+    end
+
+    subgraph out ["Consumers"]
+        cli["CLI<br/>init · update · review · explain · visualise"]
+        ag["AGENTS.md<br/>auto-discovery for any agent"]
+        bob["IBM Bob skills<br/>debob-query · debob-enrich"]
+    end
+
+    repo --> scan
+    scan --> ts
+    scan --> git
+    ts -->|"files, symbols, imports, calls"| build
+    git -->|"churn, authors, hot files"| build
+    build --> db
+    db --> q
+    q -->|"ModuleContext slice — never the source"| wx
+    wx --> se
+    se --> db
+    db --> cli
+    db --> ag
+    db --> bob
+```
+
+Static facts and model-inferred facts never mix: everything left of watsonx is reproducible with no
+credentials, and model output is quarantined in its own table tagged with the provider and model
+that produced it. Re-running `debob init` without `--semantic` never overwrites an enrichment.
+
+See [`docs/architecture.md`](docs/architecture.md) for the full schema and design rationale, and
+[`docs/pitch.html`](docs/pitch.html) — open it in a browser — for the measured case behind DeBob:
+what actually reaches the model, how it compares to an agent reading the files, and every
+before/after figure with its provenance.
 
 ### Language support
 

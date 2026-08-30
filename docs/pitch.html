@@ -1,0 +1,935 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="DeBob — a persistent repository knowledge graph that lets an AI coding agent query a codebase instead of re-reading it. Built with IBM Bob, on IBM watsonx.ai.">
+<title>DeBob</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;600&display=swap">
+
+<style>
+  /* ── Tokens: complete light palette on bare :root ───────────────────────── */
+  :root {
+    --ground:        #F4F6F8;
+    --surface:       #FFFFFF;
+    --surface-sunk:  #ECEFF3;
+    --ink:           #131C25;
+    --ink-soft:      #46565F;
+    --ink-faint:     #6E808C;
+    --rule:          #D6DDE4;
+    --rule-strong:   #B9C4CE;
+
+    /* Provenance is the design system: measured facts and estimated facts are
+       never rendered the same way. Teal = reported by the provider. Amber =
+       derived by us. Nothing else uses amber. */
+    --measured:      #0B7F86;
+    --measured-bg:   #E2F1F2;
+    --estimated:     #9C6E1E;
+    --estimated-bg:  #F6EEDD;
+
+    --accent:        #0B7F86;
+    --shadow:        0 1px 2px rgba(19, 28, 37, .05), 0 8px 24px -12px rgba(19, 28, 37, .18);
+
+    --font-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+    --font-body:    "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono:    "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  /* System-dark (no stamp) — tokens only, and an explicit light choice still wins */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:        #0D141B;
+      --surface:       #141E27;
+      --surface-sunk:  #101922;
+      --ink:           #E8EEF3;
+      --ink-soft:      #A7B7C2;
+      --ink-faint:     #7A8B97;
+      --rule:          #24323E;
+      --rule-strong:   #354857;
+      --measured:      #3FBFC4;
+      --measured-bg:   #10333A;
+      --estimated:     #D6A94F;
+      --estimated-bg:  #33290F;
+      --accent:        #3FBFC4;
+      --shadow:        0 1px 2px rgba(0, 0, 0, .3), 0 10px 30px -14px rgba(0, 0, 0, .7);
+    }
+  }
+
+  /* Explicit dark choice wins over a light OS */
+  :root[data-theme="dark"] {
+    --ground:        #0D141B;
+    --surface:       #141E27;
+    --surface-sunk:  #101922;
+    --ink:           #E8EEF3;
+    --ink-soft:      #A7B7C2;
+    --ink-faint:     #7A8B97;
+    --rule:          #24323E;
+    --rule-strong:   #354857;
+    --measured:      #3FBFC4;
+    --measured-bg:   #10333A;
+    --estimated:     #D6A94F;
+    --estimated-bg:  #33290F;
+    --accent:        #3FBFC4;
+    --shadow:        0 1px 2px rgba(0, 0, 0, .3), 0 10px 30px -14px rgba(0, 0, 0, .7);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    margin: 0 auto;
+    max-width: 1080px;
+    padding: 0 28px 96px;
+  }
+
+  .col {
+    max-width: 660px;
+  }
+
+  /* ── Type scale ─────────────────────────────────────────────────────────── */
+  h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; }
+
+  h1 {
+    font-size: clamp(2.6rem, 6vw, 4.1rem);
+    font-weight: 800;
+    letter-spacing: -.033em;
+    line-height: 1.02;
+  }
+
+  h2 {
+    font-size: clamp(1.4rem, 3vw, 1.85rem);
+    font-weight: 700;
+    letter-spacing: -.02em;
+    line-height: 1.15;
+  }
+
+  h3 {
+    font-size: 1.02rem;
+    font-weight: 700;
+    letter-spacing: -.008em;
+  }
+
+  p { margin: 0; }
+  strong { font-weight: 600; }
+
+  .eyebrow {
+    color: var(--ink-faint);
+    font-family: var(--font-mono);
+    font-size: .715rem;
+    font-weight: 500;
+    letter-spacing: .17em;
+    text-transform: uppercase;
+  }
+
+  .lede { color: var(--ink-soft); font-size: 1.16rem; line-height: 1.55; }
+  .muted { color: var(--ink-soft); }
+  .small { font-size: .93rem; }
+
+  /* Layout is spaced by flow containers, never per-element margins */
+  .stack   { display: flex; flex-direction: column; gap: 18px; }
+  .stack-s { display: flex; flex-direction: column; gap: 10px; }
+  section  { display: flex; flex-direction: column; gap: 22px; }
+  .sections { display: flex; flex-direction: column; gap: 72px; padding-top: 72px; }
+
+  /* ── Masthead ───────────────────────────────────────────────────────────── */
+  header {
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    flex-direction: column;
+    gap: 26px;
+    padding: 64px 0 44px;
+  }
+
+  .wordmark {
+    align-items: baseline;
+    display: flex;
+    gap: 12px;
+  }
+  .wordmark b {
+    font-family: var(--font-display);
+    font-size: 1.28rem;
+    font-weight: 800;
+    letter-spacing: -.025em;
+  }
+
+  .thesis {
+    color: var(--ink-soft);
+    font-size: 1.2rem;
+    line-height: 1.5;
+    max-width: 620px;
+  }
+  .thesis em {
+    color: var(--ink);
+    font-style: normal;
+    font-weight: 600;
+  }
+
+  /* ── Provenance chips: the page's core device ───────────────────────────── */
+  .chip {
+    border-radius: 3px;
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: .625rem;
+    font-weight: 600;
+    letter-spacing: .11em;
+    padding: 3px 7px;
+    text-transform: uppercase;
+    vertical-align: 2px;
+    white-space: nowrap;
+  }
+  .chip-measured  { background: var(--measured-bg);  color: var(--measured); }
+  .chip-estimated { background: var(--estimated-bg); color: var(--estimated); }
+
+  /* ── The centrepiece: what was sent vs what wasn't ──────────────────────── */
+  .evidence {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 26px;
+    padding: 32px;
+  }
+
+  .bars { display: flex; flex-direction: column; gap: 22px; }
+  .bar-row { display: flex; flex-direction: column; gap: 8px; }
+  .bar-head {
+    align-items: baseline;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: space-between;
+  }
+  .bar-label { font-size: .95rem; font-weight: 600; }
+  .bar-value {
+    font-family: var(--font-mono);
+    font-size: 1.02rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+  .bar-track {
+    background: var(--surface-sunk);
+    border-radius: 2px;
+    height: 30px;
+    overflow: hidden;
+    width: 100%;
+  }
+  .bar-fill { border-radius: 2px; height: 100%; }
+  .bar-fill-sent { background: var(--measured); width: 16.7%; }
+  /* Hatched, because this quantity is derived rather than reported */
+  .bar-fill-notsent {
+    background: repeating-linear-gradient(
+      -45deg,
+      var(--estimated) 0 6px,
+      transparent 6px 12px
+    );
+    border: 1px solid var(--estimated);
+    width: 100%;
+  }
+  .bar-note { color: var(--ink-faint); font-size: .83rem; }
+
+  .verdict {
+    align-items: baseline;
+    border-top: 1px solid var(--rule);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    padding-top: 22px;
+  }
+  .verdict-figure {
+    color: var(--measured);
+    font-family: var(--font-display);
+    font-size: 2.6rem;
+    font-weight: 800;
+    letter-spacing: -.03em;
+    line-height: 1;
+  }
+  .verdict-text { color: var(--ink-soft); font-size: .95rem; max-width: 420px; }
+
+  /* ── Pipeline ───────────────────────────────────────────────────────────── */
+  .pipeline {
+    display: grid;
+    gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+  .stage {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 14px 16px;
+  }
+  .stage-name { font-size: .9rem; font-weight: 600; }
+  .stage-desc { color: var(--ink-faint); font-size: .8rem; line-height: 1.4; }
+  .stage-final {
+    border-color: var(--measured);
+    border-style: dashed;
+  }
+
+  /* ── Data tables ────────────────────────────────────────────────────────── */
+  .table-scroll { overflow-x: auto; }
+  table {
+    border-collapse: collapse;
+    font-size: .93rem;
+    min-width: 460px;
+    width: 100%;
+  }
+  th, td {
+    border-bottom: 1px solid var(--rule);
+    padding: 11px 14px 11px 0;
+    text-align: left;
+  }
+  th {
+    color: var(--ink-faint);
+    font-family: var(--font-mono);
+    font-size: .68rem;
+    font-weight: 600;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+  }
+  td.num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .delta { color: var(--measured); font-weight: 600; }
+
+  /* ── Provenance ledger ──────────────────────────────────────────────────── */
+  .ledger { display: flex; flex-direction: column; gap: 0; }
+  .ledger-row {
+    align-items: baseline;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    padding: 13px 0;
+  }
+  .ledger-score {
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: .95rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    min-width: 46px;
+  }
+  .ledger-what { font-size: .95rem; font-weight: 600; min-width: 190px; }
+  .ledger-why { color: var(--ink-soft); font-size: .88rem; flex: 1 1 240px; }
+
+  /* ── Limits ─────────────────────────────────────────────────────────────── */
+  .limits { display: flex; flex-direction: column; gap: 0; }
+  .limit {
+    border-left: 2px solid var(--rule-strong);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 0 18px 18px;
+  }
+  .limit:last-child { padding-bottom: 0; }
+  .limit-head { font-size: .95rem; font-weight: 600; }
+  .limit-body { color: var(--ink-soft); font-size: .9rem; }
+
+  /* ── Objection ──────────────────────────────────────────────────────────── */
+  .objection {
+    background: var(--surface-sunk);
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 30px 32px;
+  }
+  .objection-q {
+    font-family: var(--font-display);
+    font-size: 1.22rem;
+    font-weight: 700;
+    letter-spacing: -.018em;
+    line-height: 1.3;
+  }
+  .answers { display: flex; flex-direction: column; gap: 16px; }
+  .answer { display: flex; flex-direction: column; gap: 3px; }
+  .answer-head { font-size: .95rem; font-weight: 600; }
+  .answer-body { color: var(--ink-soft); font-size: .9rem; }
+
+  code {
+    background: var(--surface-sunk);
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: .87em;
+    padding: 1px 5px;
+  }
+
+  /* ── Command block ──────────────────────────────────────────────────────── */
+  .cmd {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: .86rem;
+    line-height: 1.75;
+    margin: 0;
+    overflow-x: auto;
+    padding: 18px 20px;
+    white-space: pre;
+  }
+  .cmd .prompt { color: var(--ink-faint); user-select: none; }
+  .cmd .note   { color: var(--measured); }
+
+  /* ── Reciprocity pair (Bob builds / Bob queries) ────────────────────────── */
+  .pair {
+    display: grid;
+    gap: 18px;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  }
+  .pair-card {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 22px 24px;
+  }
+  .pair-head {
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+    font-weight: 700;
+    letter-spacing: -.012em;
+  }
+  .pair-body { color: var(--ink-soft); font-size: .9rem; line-height: 1.6; }
+
+  /* ── Headline stats: the cost of starting blind ─────────────────────────── */
+  .stats {
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    display: grid;
+    gap: 1px;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    overflow: hidden;
+  }
+  .stat {
+    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 22px 24px;
+  }
+  .stat-num {
+    font-family: var(--font-display);
+    font-size: 1.75rem;
+    font-weight: 800;
+    letter-spacing: -.032em;
+    line-height: 1;
+  }
+  .stat-label { color: var(--ink-soft); font-size: .82rem; line-height: 1.45; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    color: var(--ink-faint);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: .85rem;
+    margin-top: 76px;
+    padding-top: 26px;
+  }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .bar-fill { animation: grow .8s cubic-bezier(.22, .8, .3, 1) both; }
+    .bar-fill-notsent { animation-delay: .1s; }
+    .bar-fill-sent { animation-delay: .28s; }
+    @keyframes grow { from { width: 0; } }
+  }
+
+  @media (max-width: 620px) {
+    body { font-size: 16px; }
+    .evidence, .objection { padding: 24px 20px; }
+    .wrap { padding: 0 20px 72px; }
+  }
+</style>
+<style>
+  /* Standalone reset. The artifact host supplies this; a file opened directly does not. */
+  html { color-scheme: light dark; }
+  body { margin: 0; padding: 0; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="wordmark">
+      <b>DeBob</b>
+      <span class="eyebrow">Repository memory for coding agents</span>
+    </div>
+    <div class="stack">
+      <h1>Git remembers what changed. DeBob remembers what the codebase means.</h1>
+      <p class="thesis">
+        A persistent knowledge graph that lets an AI agent <em>query</em> a repository instead of
+        reading it. The model never receives the implementation — and DeBob measures that rather
+        than claiming it.
+      </p>
+    </div>
+  </header>
+
+  <div class="sections">
+
+    <!-- Problem -->
+    <section>
+      <div class="col stack">
+        <span class="eyebrow">The problem</span>
+        <h2>Coding agents are amnesiac</h2>
+        <p class="muted">
+          Every session starts from zero. To answer “what does this module do?” or “what breaks if
+          I change this?”, an agent greps, opens files, and re-derives the same structure it derived
+          yesterday — burning tokens each time and producing answers nobody can audit.
+        </p>
+        <p class="muted">
+          The structure of a codebase is stable, knowable, and expensive to rediscover. It should be
+          written down once and queried, not inferred over and over from raw text.
+        </p>
+      </div>
+
+      <div class="col stats">
+        <div class="stat">
+          <span class="stat-num">105s</span>
+          <span class="stat-label">to read the repository</span>
+        </div>
+        <div class="stat">
+          <span class="stat-num">86,885</span>
+          <span class="stat-label">tokens spent</span>
+        </div>
+        <div class="stat">
+          <span class="stat-num">30</span>
+          <span class="stat-label">modules covered</span>
+        </div>
+        <div class="stat">
+          <span class="stat-num">0</span>
+          <span class="stat-label">kept when the session ended</span>
+        </div>
+      </div>
+
+      <p class="muted small col">
+        Measured: one coding agent, no DeBob, asked to describe every source module in this
+        repository. The last number is the one that matters — tomorrow it pays the first three again.
+      </p>
+    </section>
+
+    <!-- Centrepiece -->
+    <section>
+      <div class="col stack-s">
+        <span class="eyebrow">The evidence</span>
+        <h2>What actually goes to the model</h2>
+        <p class="muted">
+          Describing all 46 of DeBob's own modules, via IBM watsonx.ai. The sent figure is reported
+          by the provider; the not-sent figure is our estimate of the alternative.
+        </p>
+      </div>
+
+      <div class="evidence">
+        <div class="bars">
+          <div class="bar-row">
+            <div class="bar-head">
+              <span class="bar-label">Sending the source instead <span class="chip chip-estimated">Estimate</span></span>
+              <span class="bar-value">~164,808</span>
+            </div>
+            <div class="bar-track"><div class="bar-fill bar-fill-notsent"></div></div>
+            <p class="bar-note">Derived from 0.63&nbsp;MB scanned, at roughly 4 characters per token.</p>
+          </div>
+
+          <div class="bar-row">
+            <div class="bar-head">
+              <span class="bar-label">Graph slices DeBob sent <span class="chip chip-measured">Measured</span></span>
+              <span class="bar-value">27,478</span>
+            </div>
+            <div class="bar-track"><div class="bar-fill bar-fill-sent"></div></div>
+            <p class="bar-note">Exact prompt-token count returned by watsonx across 46 calls.</p>
+          </div>
+        </div>
+
+        <div class="verdict">
+          <span class="verdict-figure">~6.0×</span>
+          <p class="verdict-text">
+            fewer tokens than shipping the files themselves — and every DeBob run prints its own
+            figure, so the claim is re-checked on each repository rather than quoted from this page.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Head to head -->
+    <section>
+      <div class="col stack-s">
+        <span class="eyebrow">Against the obvious alternative</span>
+        <h2>Versus an agent just reading the files</h2>
+        <p class="muted">
+          The same task given to a cold coding agent with DeBob switched off: describe every source
+          module. Both sides self-reported; neither figure is estimated.
+        </p>
+      </div>
+
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">&nbsp;</th>
+              <th scope="col">DeBob</th>
+              <th scope="col">Agent reading files</th>
+              <th scope="col">Difference</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Modules described</td>
+              <td class="num">46</td>
+              <td class="num">30</td>
+              <td class="num"></td>
+            </tr>
+            <tr>
+              <td>Time per module</td>
+              <td class="num">0.4s</td>
+              <td class="num">3.5s</td>
+              <td class="num delta">8.4× faster</td>
+            </tr>
+            <tr>
+              <td>Tokens per module</td>
+              <td class="num">738</td>
+              <td class="num">2,896</td>
+              <td class="num delta">3.9× fewer</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted small col">
+        Normalised per module, because DeBob covered 14 more files — the raw totals understate it.
+        The figure neither column captures: the agent's understanding evaporates when the session
+        closes and is paid for again tomorrow, while DeBob's is written to disk and read for free
+        thereafter. So it is 8× faster once, and free every time after.
+      </p>
+    </section>
+
+    <!-- Pipeline -->
+    <section>
+      <div class="col stack-s">
+        <span class="eyebrow">How it works</span>
+        <h2>Deterministic first, model last</h2>
+        <p class="muted">
+          Structure is extracted with tree-sitter and Git — no model involved, fully reproducible.
+          Only the final stage sees an LLM, and only ever a targeted slice.
+        </p>
+      </div>
+
+      <div class="pipeline">
+        <div class="stage">
+          <span class="stage-name">Repository</span>
+          <span class="stage-desc">Any Git repo, scanned with ignore rules and a size cap</span>
+        </div>
+        <div class="stage">
+          <span class="stage-name">Static analysis</span>
+          <span class="stage-desc">Files, symbols, imports, calls, Git churn</span>
+        </div>
+        <div class="stage">
+          <span class="stage-name">Persistent graph</span>
+          <span class="stage-desc"><code>.debob/context.db</code> — SQLite, incremental</span>
+        </div>
+        <div class="stage">
+          <span class="stage-name">Targeted retrieval</span>
+          <span class="stage-desc">The slice relevant to one question</span>
+        </div>
+        <div class="stage stage-final">
+          <span class="stage-name">LLM reasoning</span>
+          <span class="stage-desc">Receives the slice — structure, call graph and the authors' own doc comments. Never the implementation.</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Traceability -->
+    <section>
+      <div class="col stack-s">
+        <span class="eyebrow">Why it holds up</span>
+        <h2>Every fact carries its own provenance</h2>
+        <p class="muted">
+          Most “AI understands your codebase” tools blend what was derived with what was guessed
+          into one confident-sounding answer. DeBob refuses to. Each node and edge stores a
+          <code>confidence</code> and a <code>dataSource</code>, and model output is quarantined in
+          its own table, tagged with the provider and model that produced it.
+        </p>
+      </div>
+
+      <div class="ledger">
+        <div class="ledger-row">
+          <span class="ledger-score">1.0</span>
+          <span class="ledger-what">Imports, exports, declarations</span>
+          <span class="ledger-why">Parsed from the AST. Reproducible, no model involved.</span>
+        </div>
+        <div class="ledger-row">
+          <span class="ledger-score">1.0</span>
+          <span class="ledger-what">File declares symbol</span>
+          <span class="ledger-why">Structural containment — a fact, not an inference.</span>
+        </div>
+        <div class="ledger-row">
+          <span class="ledger-score">0.9</span>
+          <span class="ledger-what">Calls, instantiates</span>
+          <span class="ledger-why">Name resolution, which isn’t sound under shadowing or overloads. Marked down deliberately.</span>
+        </div>
+        <div class="ledger-row">
+          <span class="ledger-score">llm</span>
+          <span class="ledger-what">Responsibility, layer</span>
+          <span class="ledger-why">Stored separately, never mixed into the structural graph.</span>
+        </div>
+      </div>
+
+      <div class="col stack-s">
+        <h3>And it runs without an API key</h3>
+        <p class="muted small">
+          The semantic layer normally comes from watsonx. It doesn’t have to: <code>debob enrich</code>
+          hands the graph context to whichever coding agent is already open in the editor, which
+          writes the summaries back. Same table, same downstream behaviour, no credentials — which
+          removes the usual barrier to a tool like this being tried at all.
+        </p>
+      </div>
+    </section>
+
+    <!-- IBM Bob -->
+    <section>
+      <div class="col stack-s">
+        <span class="eyebrow">IBM Bob</span>
+        <h2>Bob built this, and Bob queries it</h2>
+        <p class="muted">
+          DeBob was implemented with IBM Bob across its core sub-tasks — the SQLite persistence
+          layer and schema, the repository scanner, the tree-sitter TypeScript and Python analyzers,
+          the Git extractor and graph builder, the engine and CLI, the watsonx.ai adapter, and the
+          <code>review</code> / <code>explain</code> commands.
+        </p>
+      </div>
+
+      <div class="col pair">
+        <div class="pair-card">
+          <span class="pair-head">Bob wrote down what it learned</span>
+          <span class="pair-body">
+            The constraints Bob discovered are committed to the repository rather than left in chat
+            history: that <code>sql.js</code> is in-memory, so the database silently saves nothing
+            unless it is closed; that <code>web-tree-sitter</code> is an exact pin because an ABI
+            mismatch breaks the analyzer at runtime with no error; that the tree-sitter node is
+            <code>import_statement</code>, and the wrong name extracts nothing while raising
+            nothing. That file is itself the thesis — understanding, persisted.
+          </span>
+        </div>
+        <div class="pair-card">
+          <span class="pair-head">Bob is now a consumer of it</span>
+          <span class="pair-body">
+            DeBob ships two skills built for Bob. <code>debob-query</code> activates on architecture
+            questions — what a file does, what depends on it, which files sit in a layer, which
+            churn most — and answers from the graph without opening a source file.
+            <code>debob-enrich</code> lets Bob write the semantic layer itself, so the AI features
+            work with no watsonx credentials at all. The agent that built the system is now the
+            fastest thing reading it.
+          </span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Results -->
+    <section>
+      <div class="col stack-s">
+        <span class="eyebrow">Measured this week</span>
+        <h2>What changed, and by how much</h2>
+        <p class="muted">
+          All figures from DeBob analysing its own repository. Every one is a before/after
+          measurement, not a projection.
+        </p>
+      </div>
+
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Measure</th>
+              <th scope="col">Before</th>
+              <th scope="col">After</th>
+              <th scope="col">Change</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Graph edges</td>
+              <td class="num">117</td>
+              <td class="num">603</td>
+              <td class="num delta">5.2×</td>
+            </tr>
+            <tr>
+              <td>Symbols with no connection</td>
+              <td class="num">95</td>
+              <td class="num">0</td>
+              <td class="num delta">eliminated</td>
+            </tr>
+            <tr>
+              <td>Fabricated “phantom” nodes</td>
+              <td class="num">4</td>
+              <td class="num">0</td>
+              <td class="num delta">eliminated</td>
+            </tr>
+            <tr>
+              <td>Unclassified by layer</td>
+              <td class="num">74%</td>
+              <td class="num">9%</td>
+              <td class="num delta">8.2× fewer</td>
+            </tr>
+            <tr>
+              <td>Enrichment wall-clock</td>
+              <td class="num">141s</td>
+              <td class="num">19s</td>
+              <td class="num delta">7.4×</td>
+            </tr>
+            <tr>
+              <td>watsonx calls per run</td>
+              <td class="num">88</td>
+              <td class="num">46</td>
+              <td class="num delta">1.9× fewer</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted small col">
+        The remaining 9% unclassified are external package nodes, which have no file to inherit a
+        layer from. Every file and symbol in the repository is classified. 65 tests cover the
+        extraction, the graph builder and the context assembly — one of them found a bug that had
+        been silently discarding every file’s inferred layer.
+      </p>
+    </section>
+
+    <!-- Limits -->
+    <section>
+      <div class="col stack-s">
+        <span class="eyebrow">Known limits</span>
+        <h2>Where it isn’t there yet</h2>
+      </div>
+      <div class="col limits">
+        <div class="limit">
+          <span class="limit-head">Method calls aren’t resolved</span>
+          <span class="limit-body">
+            A call through a member expression — <code>adapter.close()</code> — needs type
+            information to resolve. Guessing from the property name would invent edges, so DeBob
+            emits none. In object-heavy code, “what calls X?” is genuinely partial.
+          </span>
+        </div>
+        <div class="limit">
+          <span class="limit-head">Language coverage is narrow</span>
+          <span class="limit-body">
+            TypeScript and JavaScript are solid. Python is shallow — imports and definitions only.
+            Nothing else is supported yet.
+          </span>
+        </div>
+        <div class="limit">
+          <span class="limit-head">Validated on two repositories, not many</span>
+          <span class="limit-body">
+            DeBob itself and a 338-file Next.js monorepo. That second repository immediately
+            exposed a real bug — imports of <code>*.api.ts</code> / <code>*.config.ts</code> style
+            filenames were resolving to phantom nodes — which is a fair indication of what a third
+            and fourth repository would still turn up.
+          </span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Objection -->
+    <section>
+      <div class="col stack-s">
+        <span class="eyebrow">The obvious objection</span>
+      </div>
+      <div class="objection">
+        <p class="objection-q">“Context windows are huge now. Why not just let the agent read the files?”</p>
+        <div class="answers">
+          <div class="answer">
+            <span class="answer-head">Attention isn’t free, even when context is</span>
+            <span class="answer-body">
+              Accuracy degrades as irrelevant material grows around the relevant part. Precision
+              beats volume, and cost and latency still scale with what you send.
+            </span>
+          </div>
+          <div class="answer">
+            <span class="answer-head">Some questions aren’t retrieval questions at all</span>
+            <span class="answer-body">
+              “Which files are in the data layer?” or “what are the ten highest-churn modules?”
+              can’t be answered by reading files at any context size. They’re queries over a
+              structure, and you need the structure to exist.
+            </span>
+          </div>
+          <div class="answer">
+            <span class="answer-head">The graph persists; a context window doesn’t</span>
+            <span class="answer-body">
+              An agent re-derives structure every session. The graph is written once and read
+              forever — and it carries Git history, which no amount of reading current source
+              recovers.
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Try it -->
+    <section>
+      <div class="col stack-s">
+        <span class="eyebrow">Try it</span>
+        <h2>The graph ships with the repository</h2>
+        <p class="muted">
+          DeBob's own knowledge graph is committed at <code>.debob/context.db</code>, already
+          enriched by watsonx.ai. You can open it without an IBM Cloud account, an API key, or a
+          <code>.env</code> file — the understanding travels with the code, which is the entire
+          point of building it this way.
+        </p>
+      </div>
+
+      <div class="col">
+        <pre class="cmd"><span class="prompt">$ </span>git clone https://github.com/antiiiiny/DeBob.git
+<span class="prompt">$ </span>cd DeBob &amp;&amp; npm install &amp;&amp; npm run build
+<span class="prompt">$ </span>node dist/bin/debob.js visualise
+<span class="note">  → 299 nodes · 603 edges · 46 watsonx summaries · no credentials</span></pre>
+      </div>
+
+      <p class="muted small col">
+        Verified end to end from a clean clone of the public repository. Everything above is the
+        structural graph plus the watsonx enrichment layer; pointing DeBob at a repository of your
+        own is <code>debob init</code>, and adding the semantic layer needs either watsonx
+        credentials or a coding agent already open in the editor.
+      </p>
+    </section>
+
+  </div>
+
+  <footer>
+    <p>
+      Built with IBM Bob, on IBM watsonx.ai. Structural analysis via tree-sitter and simple-git;
+      storage in SQLite. Token counts reported by the watsonx chat API; the not-sent comparison is
+      an estimate and is labelled as one throughout.
+    </p>
+    <p>
+      Figures measured against commit-current DeBob — 46 modules, 299 nodes, 603 edges, served by
+      watsonx.ai — and cross-checked on a 338-file Next.js monorepo. The graph counts above are the
+      ones in the committed <code>.debob/context.db</code>, so they can be verified from a clone.
+    </p>
+  </footer>
+
+</div>
+</body>
+</html>
